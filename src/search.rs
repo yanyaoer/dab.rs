@@ -82,7 +82,7 @@ impl From<DabTrack> for Track {
             album: dab_track
                 .album_title
                 .unwrap_or_else(|| "Unknown Album".to_string()),
-            url: String::new(), // This will be filled by getting stream URL
+            url: String::new(), // This will be filled when needed for playback
             duration_ms: dab_track.duration.map(|s| s * 1000).unwrap_or(0),
             local_path: None,
             cover_url: dab_track.album_cover,
@@ -131,7 +131,7 @@ impl DabMusicApi {
             match response.text().await {
                 Ok(response_text) => {
                     debug!("Raw API response: {}", response_text);
-                    
+
                     match serde_json::from_str::<SearchResult>(&response_text) {
                         Ok(search_result) => {
                             info!(
@@ -186,7 +186,7 @@ impl DabMusicApi {
         if response.status().is_success() {
             let response_text = response.text().await.unwrap_or_default();
             debug!("Raw stream API response: {}", response_text);
-            
+
             match serde_json::from_str::<StreamResponse>(&response_text) {
                 Ok(stream_response) => {
                     info!(
@@ -303,6 +303,29 @@ impl DabMusicApi {
         self.search_tracks_with_cache(query, limit, None).await
     }
 
+    pub async fn get_track_stream_url(
+        &self,
+        track: &Track,
+        cache: Option<&crate::cache::Cache>,
+    ) -> DabResult<String> {
+        // First check cache if provided
+        if let Some(cache) = cache {
+            if let Ok(Some(cached_url)) = cache.get_cached_url(&track.id).await {
+                if !cached_url.is_empty() {
+                    debug!("Using cached URL for track {}: {}", track.id, cached_url);
+                    return Ok(cached_url);
+                }
+            }
+        }
+
+        // Get stream URL from API
+        let stream_url = self.get_stream_url(&track.id, None).await?;
+
+        // Note: We don't cache the URL directly, we'll cache it when we actually download the track
+
+        Ok(stream_url)
+    }
+
     pub async fn search_tracks_with_cache(
         &self,
         query: &str,
@@ -315,29 +338,17 @@ impl DabMusicApi {
         for dab_track in search_result.tracks {
             let mut track: Track = dab_track.clone().into();
 
-            // Check cache first if provided
+            // Only check cache, don't fetch stream URL during search
             if let Some(cache) = cache {
-                if let Ok(Some(cached_url)) = cache.get_cached_url(&dab_track.id.to_string()).await {
+                if let Ok(Some(cached_url)) = cache.get_cached_url(&dab_track.id.to_string()).await
+                {
                     if !cached_url.is_empty() {
                         debug!(
                             "Using cached URL for track {}: {}",
                             dab_track.id, cached_url
                         );
                         track.url = cached_url;
-                        tracks.push(track);
-                        continue;
                     }
-                }
-            }
-
-            // Try to get the actual stream URL from API
-            match self.get_stream_url(&dab_track.id.to_string(), None).await {
-                Ok(stream_url) => {
-                    track.url = stream_url;
-                }
-                Err(e) => {
-                    error!("Failed to get stream URL for {}: {}", dab_track.id, e);
-                    return Err(e);
                 }
             }
 

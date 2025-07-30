@@ -157,9 +157,11 @@ impl TuiApp {
             .iter()
             .map(|track| {
                 ListItem::new(Line::from(vec![
-                    Span::styled(&track.title, Style::default().fg(Color::White)),
+                    Span::styled(&track.artist, Style::default().fg(Color::Cyan)),
                     Span::raw(" - "),
-                    Span::styled(&track.artist, Style::default().fg(Color::Gray)),
+                    Span::styled(&track.album, Style::default().fg(Color::Blue)),
+                    Span::raw(" - "),
+                    Span::styled(&track.title, Style::default().fg(Color::White)),
                 ]))
             })
             .collect();
@@ -210,15 +212,18 @@ impl TuiApp {
                 .iter()
                 .enumerate()
                 .map(|(i, track)| {
-                    let cached_indicator = "";
+                    let cached_indicator = if !track.url.is_empty() {
+                        " [cached]"
+                    } else {
+                        ""
+                    };
 
                     ListItem::new(Line::from(vec![
-                        Span::styled(&track.title, Style::default().fg(Color::White)),
+                        Span::styled(&track.artist, Style::default().fg(Color::Cyan)),
                         Span::raw(" - "),
-                        Span::styled(&track.artist, Style::default().fg(Color::Gray)),
-                        Span::raw(" ("),
                         Span::styled(&track.album, Style::default().fg(Color::Blue)),
-                        Span::raw(")"),
+                        Span::raw(" - "),
+                        Span::styled(&track.title, Style::default().fg(Color::White)),
                         Span::styled(cached_indicator, Style::default().fg(Color::Green)),
                     ]))
                 })
@@ -496,8 +501,56 @@ impl TuiApp {
 
     async fn play_selected_track(&mut self) -> DabResult<()> {
         if let Some(selected_index) = self.list_state.selected() {
-            if let Some(track) = self.tracks.get(selected_index) {
-                self.player.load_and_play(&track.url).await?;
+            // Get track info first to avoid borrow conflicts
+            let (track_id, track_title, needs_url) = {
+                if let Some(track) = self.tracks.get(selected_index) {
+                    (
+                        track.id.clone(),
+                        track.title.clone(),
+                        self.current_view == View::Search && track.url.is_empty(),
+                    )
+                } else {
+                    return Ok(());
+                }
+            };
+
+            // If we're in search view and the track doesn't have a URL yet, get it
+            if needs_url {
+                self.status_message = Some(format!("Getting stream URL for {}...", track_title));
+
+                let cache = self.cache.read().await;
+                let track_ref = self.tracks.get(selected_index).unwrap();
+                match self
+                    .search_api
+                    .get_track_stream_url(track_ref, Some(&*cache))
+                    .await
+                {
+                    Ok(stream_url) => {
+                        drop(cache);
+                        // Update the track in the search results
+                        if let Some(search_track) =
+                            self.search_results.iter_mut().find(|t| t.id == track_id)
+                        {
+                            search_track.url = stream_url.clone();
+                        }
+                        // Update the track in the current tracks list
+                        if let Some(current_track) = self.tracks.get_mut(selected_index) {
+                            current_track.url = stream_url.clone();
+                        }
+                        self.status_message = Some(format!("Now playing: {}", track_title));
+                        self.player.load_and_play(&stream_url).await?;
+                    }
+                    Err(e) => {
+                        self.status_message = Some(format!("Failed to get stream URL: {}", e));
+                        return Err(e);
+                    }
+                }
+            } else {
+                // Track already has URL or we're not in search view
+                if let Some(track) = self.tracks.get(selected_index) {
+                    self.status_message = Some(format!("Now playing: {}", track.title));
+                    self.player.load_and_play(&track.url).await?;
+                }
             }
         }
         Ok(())
