@@ -98,15 +98,25 @@ impl Cli {
                 info!("Adding track to queue: {}", url);
                 player.add_to_queue(&url).await?;
             }
-            Some(Commands::Search { query, r#type, limit }) => {
-                info!("Performing search for query: {} (type: {}, limit: {})", query, r#type, limit);
+            Some(Commands::Search {
+                query,
+                r#type,
+                limit,
+            }) => {
+                info!(
+                    "Performing search for query: {} (type: {}, limit: {})",
+                    query, r#type, limit
+                );
                 let search_api = MusicSearchApi::new();
 
                 // Validate search type
                 let search_type = r#type.as_str();
                 if !["track", "album", "artist"].contains(&search_type) {
                     error!("Invalid search type: {}", search_type);
-                    eprintln!("Error: Invalid search type '{}'. Must be one of: track, album, artist", search_type);
+                    eprintln!(
+                        "Error: Invalid search type '{}'. Must be one of: track, album, artist",
+                        search_type
+                    );
                     return Ok(());
                 }
 
@@ -127,7 +137,11 @@ impl Cli {
                                 );
 
                                 // For CLI output, we need to write to stdout, but also log the search
-                                eprintln!("Track search results for '{}' ({} results):", query, tracks.len());
+                                eprintln!(
+                                    "Track search results for '{}' ({} results):",
+                                    query,
+                                    tracks.len()
+                                );
                                 eprintln!();
 
                                 for (index, track) in tracks.iter().enumerate() {
@@ -168,91 +182,86 @@ impl Cli {
                             }
                         }
                     }
-                    "album" => {
-                        match search_api.search_albums(&query, limit).await {
-                            Ok(albums) => {
-                                info!(
-                                    "Album search completed successfully, found {} results",
-                                    albums.len()
-                                );
+                    "album" => match search_api.search_albums(&query, limit).await {
+                        Ok(albums) => {
+                            info!(
+                                "Album search completed successfully, found {} results",
+                                albums.len()
+                            );
 
-                                eprintln!("Album search results for '{}' ({} results):", query, albums.len());
-                                eprintln!();
+                            eprintln!(
+                                "Album search results for '{}' ({} results):",
+                                query,
+                                albums.len()
+                            );
+                            eprintln!();
 
-                                for (index, album) in albums.iter().enumerate() {
-                                    eprintln!(
-                                        "{}. {} - {}",
-                                        index + 1,
-                                        album.artist,
-                                        album.title
-                                    );
+                            for (index, album) in albums.iter().enumerate() {
+                                eprintln!("{}. {} - {}", index + 1, album.artist, album.title);
 
-                                    if let Some(release_date) = &album.release_date {
-                                        eprintln!("   Release Date: {}", release_date);
-                                    }
-
-                                    if let Some(track_count) = album.track_count {
-                                        eprintln!("   Tracks: {}", track_count);
-                                    }
-
-                                    if let Some(duration) = album.duration {
-                                        let minutes = duration / 60;
-                                        let seconds = duration % 60;
-                                        eprintln!("   Duration: {}:{:02}", minutes, seconds);
-                                    }
-
-                                    if let Some(cover) = &album.cover {
-                                        eprintln!("   Cover: {}", cover);
-                                    }
-
-                                    eprintln!();
+                                if let Some(release_date) = &album.release_date {
+                                    eprintln!("   Release Date: {}", release_date);
                                 }
-                            }
-                            Err(e) => {
-                                error!("Album search failed for query '{}': {}", query, e);
-                                eprintln!("Album search failed: {}", e);
+
+                                if let Some(track_count) = album.track_count {
+                                    eprintln!("   Tracks: {}", track_count);
+                                }
+
+                                if let Some(duration) = album.duration {
+                                    let minutes = duration / 60;
+                                    let seconds = duration % 60;
+                                    eprintln!("   Duration: {}:{:02}", minutes, seconds);
+                                }
+
+                                if let Some(cover) = &album.cover {
+                                    eprintln!("   Cover: {}", cover);
+                                }
+
+                                eprintln!();
                             }
                         }
-                    }
-                    "artist" => {
-                        match search_api.search_artists(&query, limit).await {
-                            Ok(artists) => {
-                                info!(
-                                    "Artist search completed successfully, found {} results",
-                                    artists.len()
-                                );
+                        Err(e) => {
+                            error!("Album search failed for query '{}': {}", query, e);
+                            eprintln!("Album search failed: {}", e);
+                        }
+                    },
+                    "artist" => match search_api.search_artists(&query, limit).await {
+                        Ok(artists) => {
+                            info!(
+                                "Artist search completed successfully, found {} results",
+                                artists.len()
+                            );
 
-                                eprintln!("Artist search results for '{}' ({} results):", query, artists.len());
-                                eprintln!();
+                            eprintln!(
+                                "Artist search results for '{}' ({} results):",
+                                query,
+                                artists.len()
+                            );
+                            eprintln!();
 
-                                for (index, artist) in artists.iter().enumerate() {
-                                    eprintln!(
-                                        "{}. {}",
-                                        index + 1,
-                                        artist.name
-                                    );
+                            for (index, artist) in artists.iter().enumerate() {
+                                eprintln!("{}. {}", index + 1, artist.name);
 
-                                    if let Some(albums_count) = artist.albums_count {
-                                        eprintln!("   Albums: {}", albums_count);
-                                    }
-
-                                    if let Some(image) = &artist.image {
-                                        eprintln!("   Image: {}", image);
-                                    }
-
-                                    if let Some(biography) = &artist.biography {
-                                        eprintln!("   Biography: {}", biography);
-                                    }
-
-                                    eprintln!();
+                                if let Some(albums_count) = artist.albums_count {
+                                    eprintln!("   Albums: {}", albums_count);
                                 }
-                            }
-                            Err(e) => {
-                                error!("Artist search failed for query '{}': {}", query, e);
-                                eprintln!("Artist search failed: {}", e);
+
+                                if let Some(image) = &artist.image {
+                                    eprintln!("   Image: {}", image);
+                                }
+
+                                if let Some(biography) = &artist.biography {
+                                    eprintln!("   Biography: {}", biography);
+                                }
+
+                                eprintln!();
                             }
                         }
-                    }
+                        Err(e) => {
+                            error!("Artist search failed for query '{}': {}", query, e);
+                            eprintln!("Artist search failed: {}", e);
+                        }
+                    },
                     _ => {
                         // This should never happen due to validation above
                         error!("Unsupported search type: {}", search_type);

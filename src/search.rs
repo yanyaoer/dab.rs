@@ -19,7 +19,6 @@ pub enum SearchResults {
     Artists { artists: Vec<DabArtist> },
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DabTrack {
     pub id: u64,
@@ -149,10 +148,7 @@ impl DabMusicApi {
                                 SearchResults::Albums { albums } => albums.len(),
                                 SearchResults::Artists { artists } => artists.len(),
                             };
-                            info!(
-                                "DAB API search successful: found {} results",
-                                result_count
-                            );
+                            info!("DAB API search successful: found {} results", result_count);
                             Ok(search_result)
                         }
                         Err(e) => {
@@ -310,6 +306,50 @@ impl DabMusicApi {
             )))
         }
     }
+
+    pub async fn get_artist_discography(
+        &self,
+        artist_id: &str,
+    ) -> DabResult<(DabArtist, Vec<DabAlbum>)> {
+        let url = format!("{}/discography", self.base_url);
+
+        debug!("Getting discography for artist: {}", artist_id);
+
+        let response = self
+            .client
+            .get(&url)
+            .query(&[("artistId", artist_id)])
+            .send()
+            .await?;
+
+        if response.status().is_success() {
+            #[derive(Deserialize)]
+            struct DiscographyResponse {
+                artist: DabArtist,
+                albums: Vec<DabAlbum>,
+            }
+
+            match response.json::<DiscographyResponse>().await {
+                Ok(discography_response) => {
+                    info!("Got discography for artist: {}", artist_id);
+                    Ok((discography_response.artist, discography_response.albums))
+                }
+                Err(e) => {
+                    error!("Failed to parse discography response: {}", e);
+                    Err(DabError::Network(format!(
+                        "Failed to parse discography response: {}",
+                        e
+                    )))
+                }
+            }
+        } else {
+            error!("Failed to get discography: {}", response.status());
+            Err(DabError::Network(format!(
+                "Failed to get discography: {}",
+                response.status()
+            )))
+        }
+    }
 }
 
 // Enhanced search API with convenience methods and cache integration
@@ -357,7 +397,8 @@ impl DabMusicApi {
 
                     // Only check cache, don't fetch stream URL during search
                     if let Some(cache) = cache {
-                        if let Ok(Some(cached_url)) = cache.get_cached_url(&dab_track.id.to_string()).await
+                        if let Ok(Some(cached_url)) =
+                            cache.get_cached_url(&dab_track.id.to_string()).await
                         {
                             if !cached_url.is_empty() {
                                 debug!(
@@ -422,23 +463,29 @@ impl DabMusicApi {
         let mut artists = Vec::new();
 
         match search_result.results {
-            SearchResults::Artists { artists: dab_artists } => {
+            SearchResults::Artists {
+                artists: dab_artists,
+            } => {
                 artists = dab_artists;
             }
             SearchResults::Tracks { tracks } => {
                 // Extract unique artists from tracks and count their albums
                 let mut artist_album_count = std::collections::HashMap::new();
-                
+
                 for track in tracks {
-                    let album_title = track.album_title.as_ref().map(|s| s.as_str()).unwrap_or("Unknown Album");
-                    
+                    let album_title = track
+                        .album_title
+                        .as_ref()
+                        .map(|s| s.as_str())
+                        .unwrap_or("Unknown Album");
+
                     // Count unique albums for each artist
                     let albums_for_artist = artist_album_count
                         .entry(track.artist.clone())
                         .or_insert_with(|| std::collections::HashSet::new());
                     albums_for_artist.insert(album_title.to_string());
                 }
-                
+
                 // Create artists with proper album counts
                 for (artist_name, albums) in artist_album_count {
                     artists.push(DabArtist {

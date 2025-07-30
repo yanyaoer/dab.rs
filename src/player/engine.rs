@@ -371,8 +371,7 @@ impl PlayerEngine {
     }
 
     pub async fn clear_and_play(&mut self, urls: Vec<String>) -> DabResult<()> {
-        self.send_command(PlayerCommand::ClearAndPlay(urls))
-            .await
+        self.send_command(PlayerCommand::ClearAndPlay(urls)).await
     }
 
     pub async fn get_status(&mut self) -> DabResult<PlayerStatus> {
