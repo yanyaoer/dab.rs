@@ -7,8 +7,18 @@ use crate::player::Track;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
-    pub tracks: Vec<DabTrack>,
+    #[serde(flatten)]
+    pub results: SearchResults,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SearchResults {
+    Tracks { tracks: Vec<DabTrack> },
+    Albums { albums: Vec<DabAlbum> },
+    Artists { artists: Vec<DabArtist> },
+}
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DabTrack {
@@ -134,9 +144,14 @@ impl DabMusicApi {
 
                     match serde_json::from_str::<SearchResult>(&response_text) {
                         Ok(search_result) => {
+                            let result_count = match &search_result.results {
+                                SearchResults::Tracks { tracks } => tracks.len(),
+                                SearchResults::Albums { albums } => albums.len(),
+                                SearchResults::Artists { artists } => artists.len(),
+                            };
                             info!(
-                                "DAB API search successful: found {} tracks",
-                                search_result.tracks.len()
+                                "DAB API search successful: found {} results",
+                                result_count
                             );
                             Ok(search_result)
                         }
@@ -335,24 +350,32 @@ impl DabMusicApi {
         let search_result = self.search(query, "track", limit).await?;
         let mut tracks = Vec::new();
 
-        for dab_track in search_result.tracks {
-            let mut track: Track = dab_track.clone().into();
+        match search_result.results {
+            SearchResults::Tracks { tracks: dab_tracks } => {
+                for dab_track in dab_tracks {
+                    let mut track: Track = dab_track.clone().into();
 
-            // Only check cache, don't fetch stream URL during search
-            if let Some(cache) = cache {
-                if let Ok(Some(cached_url)) = cache.get_cached_url(&dab_track.id.to_string()).await
-                {
-                    if !cached_url.is_empty() {
-                        debug!(
-                            "Using cached URL for track {}: {}",
-                            dab_track.id, cached_url
-                        );
-                        track.url = cached_url;
+                    // Only check cache, don't fetch stream URL during search
+                    if let Some(cache) = cache {
+                        if let Ok(Some(cached_url)) = cache.get_cached_url(&dab_track.id.to_string()).await
+                        {
+                            if !cached_url.is_empty() {
+                                debug!(
+                                    "Using cached URL for track {}: {}",
+                                    dab_track.id, cached_url
+                                );
+                                track.url = cached_url;
+                            }
+                        }
                     }
+
+                    tracks.push(track);
                 }
             }
-
-            tracks.push(track);
+            _ => {
+                // For compatibility, convert other types to tracks if possible
+                debug!("Search result is not tracks, might be albums or artists");
+            }
         }
 
         Ok(tracks)
@@ -360,48 +383,68 @@ impl DabMusicApi {
 
     pub async fn search_albums(&self, query: &str, limit: u32) -> DabResult<Vec<DabAlbum>> {
         let search_result = self.search(query, "album", limit).await?;
-        // For now, convert tracks to albums (simplified)
-        let albums: Vec<DabAlbum> = search_result
-            .tracks
-            .into_iter()
-            .map(|track| DabAlbum {
-                id: track
-                    .album_id
-                    .unwrap_or_else(|| format!("album_{}", track.id)),
-                title: track
-                    .album_title
-                    .unwrap_or_else(|| "Unknown Album".to_string()),
-                artist: track.artist,
-                release_date: track.release_date,
-                genre: track.genre,
-                cover: track.album_cover,
-                tracks: None,
-                track_count: Some(1),
-                duration: track.duration,
-            })
-            .collect();
+        let mut albums = Vec::new();
+
+        match search_result.results {
+            SearchResults::Albums { albums: dab_albums } => {
+                albums = dab_albums;
+            }
+            SearchResults::Tracks { tracks } => {
+                // Convert tracks to albums (fallback for backward compatibility)
+                for track in tracks {
+                    albums.push(DabAlbum {
+                        id: track
+                            .album_id
+                            .unwrap_or_else(|| format!("album_{}", track.id)),
+                        title: track
+                            .album_title
+                            .unwrap_or_else(|| "Unknown Album".to_string()),
+                        artist: track.artist,
+                        release_date: track.release_date,
+                        genre: track.genre,
+                        cover: track.album_cover,
+                        tracks: None,
+                        track_count: Some(1),
+                        duration: track.duration,
+                    });
+                }
+            }
+            _ => {
+                debug!("Search result is not albums or tracks");
+            }
+        }
 
         Ok(albums)
     }
 
     pub async fn search_artists(&self, query: &str, limit: u32) -> DabResult<Vec<DabArtist>> {
         let search_result = self.search(query, "artist", limit).await?;
-        // For now, convert tracks to artists (simplified)
-        let artists: Vec<DabArtist> = search_result
-            .tracks
-            .into_iter()
-            .map(|track| DabArtist {
-                id: track
-                    .artist_id
-                    .map(|id| id.to_string())
-                    .unwrap_or_else(|| format!("artist_{}", track.id)),
-                name: track.artist,
-                albums_count: Some(1),
-                slug: None,
-                image: None,
-                biography: None,
-            })
-            .collect();
+        let mut artists = Vec::new();
+
+        match search_result.results {
+            SearchResults::Artists { artists: dab_artists } => {
+                artists = dab_artists;
+            }
+            SearchResults::Tracks { tracks } => {
+                // Convert tracks to artists (fallback for backward compatibility)
+                for track in tracks {
+                    artists.push(DabArtist {
+                        id: track
+                            .artist_id
+                            .map(|id| id.to_string())
+                            .unwrap_or_else(|| format!("artist_{}", track.id)),
+                        name: track.artist,
+                        albums_count: Some(1),
+                        slug: None,
+                        image: None,
+                        biography: None,
+                    });
+                }
+            }
+            _ => {
+                debug!("Search result is not artists or tracks");
+            }
+        }
 
         Ok(artists)
     }

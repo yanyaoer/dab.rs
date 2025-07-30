@@ -1,3 +1,4 @@
+use id3::TagLike;
 use log::{debug, info};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -76,13 +77,34 @@ impl Library {
     }
 
     async fn scan_cached_files(&mut self) -> DabResult<()> {
-        // This would scan cached files and extract metadata using ID3 tags
         info!("Scanning cached files for metadata...");
+        let cached_files = self.cache.get_all_cached_files().await?;
 
-        // TODO: Implement ID3 tag extraction
-        // For now, just log that we're scanning
+        for (track_id, file_path) in cached_files {
+            if let Ok(tag) = id3::Tag::read_from_path(&file_path) {
+                let title = tag.title().unwrap_or("Unknown Title").to_string();
+                let artist = tag.artist().unwrap_or("Unknown Artist").to_string();
+                let album = tag.album().unwrap_or("Unknown Album").to_string();
+                let duration_ms = tag.duration().map(|d| d * 1000);
+
+                let metadata = TrackMetadata {
+                    id: track_id.clone(),
+                    title,
+                    artist: artist.clone(),
+                    album: album.clone(),
+                    duration_ms,
+                    track_number: tag.track(),
+                    year: tag.year().map(|y| y as u32),
+                    genre: tag.genre().map(|s| s.to_string()),
+                    file_path: file_path.to_string_lossy().to_string(),
+                };
+
+                self.metadata.tracks.insert(track_id.clone(), metadata);
+                self.update_artist_album_metadata(&artist, &album, &track_id);
+            }
+        }
+
         debug!("Cached files scanned");
-
         Ok(())
     }
 

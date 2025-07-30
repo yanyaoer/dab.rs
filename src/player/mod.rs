@@ -44,6 +44,8 @@ pub enum PlayerCommand {
     Previous,
     Seek(u32),
     AddToQueue(String),
+    AddNext(String),
+    ClearAndPlay(Vec<String>),
     SetVolume(f32),
     GetStatus(tokio::sync::oneshot::Sender<PlayerStatus>),
 }

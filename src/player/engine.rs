@@ -232,6 +232,33 @@ impl PlayerEngine {
                     }
                 });
             }
+            PlayerCommand::AddNext(url) => {
+                let track = Track::from_url(&url);
+                queue.add_track_next(track).await;
+                let _ = event_tx.send(PlayerEvent::QueueChanged);
+            }
+            PlayerCommand::ClearAndPlay(urls) => {
+                queue.clear().await;
+                for url in urls {
+                    let track = Track::from_url(&url);
+                    queue.add_track(track).await;
+                }
+                if let Some(track) = queue.next_track().await {
+                    Self::load_and_play_track(
+                        &track.url,
+                        event_tx,
+                        state,
+                        current_track,
+                        position_ms,
+                        volume,
+                        queue,
+                        loader,
+                        audio_sink,
+                    )
+                    .await?;
+                }
+                let _ = event_tx.send(PlayerEvent::QueueChanged);
+            }
             PlayerCommand::SetVolume(vol) => {
                 let clamped_volume = vol.clamp(0.0, 1.0);
                 audio_sink.read().await.set_volume(clamped_volume)?;
@@ -335,6 +362,16 @@ impl PlayerEngine {
 
     pub async fn add_to_queue(&mut self, url: &str) -> DabResult<()> {
         self.send_command(PlayerCommand::AddToQueue(url.to_string()))
+            .await
+    }
+
+    pub async fn add_next(&mut self, url: &str) -> DabResult<()> {
+        self.send_command(PlayerCommand::AddNext(url.to_string()))
+            .await
+    }
+
+    pub async fn clear_and_play(&mut self, urls: Vec<String>) -> DabResult<()> {
+        self.send_command(PlayerCommand::ClearAndPlay(urls))
             .await
     }
 

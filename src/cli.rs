@@ -41,6 +41,12 @@ enum Commands {
     Search {
         /// Search query
         query: String,
+        /// Type of content to search for (track, album, artist)
+        #[arg(short, long, default_value = "track")]
+        r#type: String,
+        /// Number of results to return (1-50)
+        #[arg(short, long, default_value = "20")]
+        limit: u32,
     },
     /// Show current status
     Status,
@@ -92,56 +98,165 @@ impl Cli {
                 info!("Adding track to queue: {}", url);
                 player.add_to_queue(&url).await?;
             }
-            Some(Commands::Search { query }) => {
-                info!("Performing search for query: {}", query);
+            Some(Commands::Search { query, r#type, limit }) => {
+                info!("Performing search for query: {} (type: {}, limit: {})", query, r#type, limit);
                 let search_api = MusicSearchApi::new();
 
-                match search_api.search_tracks(&query, 10).await {
-                    Ok(tracks) => {
-                        info!(
-                            "Search completed successfully, found {} results",
-                            tracks.len()
-                        );
+                // Validate search type
+                let search_type = r#type.as_str();
+                if !["track", "album", "artist"].contains(&search_type) {
+                    error!("Invalid search type: {}", search_type);
+                    eprintln!("Error: Invalid search type '{}'. Must be one of: track, album, artist", search_type);
+                    return Ok(());
+                }
 
-                        // For CLI output, we need to write to stdout, but also log the search
-                        eprintln!("Search results for '{}' ({} results):", query, tracks.len());
-                        eprintln!();
+                // Validate limit
+                if limit < 1 || limit > 50 {
+                    error!("Invalid limit: {}", limit);
+                    eprintln!("Error: Limit must be between 1 and 50");
+                    return Ok(());
+                }
 
-                        for (index, track) in tracks.iter().enumerate() {
-                            eprintln!(
-                                "{}. {} - {} ({})",
-                                index + 1,
-                                track.artist,
-                                track.title,
-                                track.album
-                            );
+                match search_type {
+                    "track" => {
+                        match search_api.search_tracks(&query, limit).await {
+                            Ok(tracks) => {
+                                info!(
+                                    "Track search completed successfully, found {} results",
+                                    tracks.len()
+                                );
 
-                            if track.duration_ms > 0 {
-                                let total_seconds = track.duration_ms / 1000;
-                                let minutes = total_seconds / 60;
-                                let seconds = total_seconds % 60;
-                                eprintln!("   Duration: {}:{:02}", minutes, seconds);
+                                // For CLI output, we need to write to stdout, but also log the search
+                                eprintln!("Track search results for '{}' ({} results):", query, tracks.len());
+                                eprintln!();
+
+                                for (index, track) in tracks.iter().enumerate() {
+                                    eprintln!(
+                                        "{}. {} - {} ({})",
+                                        index + 1,
+                                        track.artist,
+                                        track.title,
+                                        track.album
+                                    );
+
+                                    if track.duration_ms > 0 {
+                                        let total_seconds = track.duration_ms / 1000;
+                                        let minutes = total_seconds / 60;
+                                        let seconds = total_seconds % 60;
+                                        eprintln!("   Duration: {}:{:02}", minutes, seconds);
+                                    }
+
+                                    if !track.url.is_empty() {
+                                        eprintln!("   Stream URL: {}", track.url);
+                                    }
+
+                                    if let Some(cover_url) = &track.cover_url {
+                                        eprintln!("   Cover: {}", cover_url);
+                                    }
+
+                                    eprintln!();
+                                }
+
+                                if !tracks.is_empty() {
+                                    eprintln!("To play a track, use: dab play <Stream URL>");
+                                    eprintln!("To add to queue, use: dab queue <Stream URL>");
+                                }
                             }
-
-                            if !track.url.is_empty() {
-                                eprintln!("   Stream URL: {}", track.url);
+                            Err(e) => {
+                                error!("Track search failed for query '{}': {}", query, e);
+                                eprintln!("Track search failed: {}", e);
                             }
-
-                            if let Some(cover_url) = &track.cover_url {
-                                eprintln!("   Cover: {}", cover_url);
-                            }
-
-                            eprintln!();
-                        }
-
-                        if !tracks.is_empty() {
-                            eprintln!("To play a track, use: dab play <Stream URL>");
-                            eprintln!("To add to queue, use: dab queue <Stream URL>");
                         }
                     }
-                    Err(e) => {
-                        error!("Search failed for query '{}': {}", query, e);
-                        eprintln!("Search failed: {}", e);
+                    "album" => {
+                        match search_api.search_albums(&query, limit).await {
+                            Ok(albums) => {
+                                info!(
+                                    "Album search completed successfully, found {} results",
+                                    albums.len()
+                                );
+
+                                eprintln!("Album search results for '{}' ({} results):", query, albums.len());
+                                eprintln!();
+
+                                for (index, album) in albums.iter().enumerate() {
+                                    eprintln!(
+                                        "{}. {} - {}",
+                                        index + 1,
+                                        album.artist,
+                                        album.title
+                                    );
+
+                                    if let Some(release_date) = &album.release_date {
+                                        eprintln!("   Release Date: {}", release_date);
+                                    }
+
+                                    if let Some(track_count) = album.track_count {
+                                        eprintln!("   Tracks: {}", track_count);
+                                    }
+
+                                    if let Some(duration) = album.duration {
+                                        let minutes = duration / 60;
+                                        let seconds = duration % 60;
+                                        eprintln!("   Duration: {}:{:02}", minutes, seconds);
+                                    }
+
+                                    if let Some(cover) = &album.cover {
+                                        eprintln!("   Cover: {}", cover);
+                                    }
+
+                                    eprintln!();
+                                }
+                            }
+                            Err(e) => {
+                                error!("Album search failed for query '{}': {}", query, e);
+                                eprintln!("Album search failed: {}", e);
+                            }
+                        }
+                    }
+                    "artist" => {
+                        match search_api.search_artists(&query, limit).await {
+                            Ok(artists) => {
+                                info!(
+                                    "Artist search completed successfully, found {} results",
+                                    artists.len()
+                                );
+
+                                eprintln!("Artist search results for '{}' ({} results):", query, artists.len());
+                                eprintln!();
+
+                                for (index, artist) in artists.iter().enumerate() {
+                                    eprintln!(
+                                        "{}. {}",
+                                        index + 1,
+                                        artist.name
+                                    );
+
+                                    if let Some(albums_count) = artist.albums_count {
+                                        eprintln!("   Albums: {}", albums_count);
+                                    }
+
+                                    if let Some(image) = &artist.image {
+                                        eprintln!("   Image: {}", image);
+                                    }
+
+                                    if let Some(biography) = &artist.biography {
+                                        eprintln!("   Biography: {}", biography);
+                                    }
+
+                                    eprintln!();
+                                }
+                            }
+                            Err(e) => {
+                                error!("Artist search failed for query '{}': {}", query, e);
+                                eprintln!("Artist search failed: {}", e);
+                            }
+                        }
+                    }
+                    _ => {
+                        // This should never happen due to validation above
+                        error!("Unsupported search type: {}", search_type);
+                        eprintln!("Error: Unsupported search type '{}'", search_type);
                     }
                 }
             }

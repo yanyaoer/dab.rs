@@ -63,6 +63,16 @@ impl Queue {
         tracks.push_back(track);
     }
 
+    pub async fn add_track_next(&self, track: Track) {
+        let mut tracks = self.tracks.write().await;
+        let current_index = self.current_index.read().await;
+        if let Some(index) = *current_index {
+            tracks.insert(index + 1, track);
+        } else {
+            tracks.push_front(track);
+        }
+    }
+
     pub async fn get_current_track(&self) -> Option<Track> {
         let tracks = self.tracks.read().await;
         let current_index = self.current_index.read().await;
