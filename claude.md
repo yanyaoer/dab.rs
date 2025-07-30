@@ -1,6 +1,6 @@
 参考 cmus 的交互界面 ./resource/cmus-2.4.3-osx.png 和 ./resource/openapi.yaml 接口描述, 编写一个 unix 风格的命令行音乐播放器
 
-- 按合理的日志分级输出调试信息和错误
+- 按合理的日志分级输出调试信息和错误, 默认输出到 /tmp/dab_rs.log，禁止 print 方式直接打印
 - 为模块核心功能提供健壮的单元测试，每次改动后进行同步验证确保播放引擎正确工作
 - 参考 /Users/yanyao/Projects/fork/librespot 项目的播放引擎设计，使用 rodio backend 并实现完备的播放队列控制
     - 支持流式加载本地和在线音频文件，一边加载一边播放
@@ -10,9 +10,10 @@
     - 支持 dab queue 'https://collie.fouland.com/audio/love_papa.mp3'
       添加本地文件和在线文件到播放列表
 
-- 适配openapi支持在线曲库的搜索和下载接口
+- 适配 ./resource/openapi.yaml 支持在线曲库的搜索和下载接口
     - TUI 中按键 / 进行搜索
     - 支持命令 dab search 'query' 搜索歌曲
+    - @resource/openapi.yaml 搜索服务和对应的在线曲库的接口请参考这个文档描述来实现，获取歌曲资源的 url 进行流式播放以及缓存管理
 
 - 支持本地文件缓存，优先读取和播放本地音频文件
     - 播放在线音频时，缓存当前完整音频到本地缓存

@@ -1,15 +1,15 @@
+use log::{debug, error, info};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
-use log::{info, error, debug};
-use serde::{Serialize, Deserialize};
 
-mod engine;
-mod queue;
-mod loader;
-mod decoder;
-mod sink;
 mod audio_source;
+mod decoder;
+mod engine;
+mod loader;
+mod queue;
+mod sink;
 
 pub use engine::PlayerEngine;
 pub use queue::{Queue, Track};

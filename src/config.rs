@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -13,7 +13,7 @@ pub struct Config {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AudioQuality {
     Low,    // 96 kbps
-    Medium, // 160 kbps  
+    Medium, // 160 kbps
     High,   // 320 kbps
 }
 

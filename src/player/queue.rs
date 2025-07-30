@@ -1,6 +1,6 @@
-use std::sync::Arc;
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use serde::{Serialize, Deserialize};
+use std::sync::Arc;
 use tokio::sync::RwLock;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,7 +28,7 @@ impl Track {
             cover_url: None,
         }
     }
-    
+
     fn extract_title_from_url(url: &str) -> String {
         url.split('/')
             .last()
@@ -57,31 +57,31 @@ impl Queue {
             repeat: Arc::new(RwLock::new(false)),
         }
     }
-    
+
     pub async fn add_track(&self, track: Track) {
         let mut tracks = self.tracks.write().await;
         tracks.push_back(track);
     }
-    
+
     pub async fn get_current_track(&self) -> Option<Track> {
         let tracks = self.tracks.read().await;
         let current_index = self.current_index.read().await;
-        
+
         if let Some(index) = *current_index {
             tracks.get(index).cloned()
         } else {
             None
         }
     }
-    
+
     pub async fn next_track(&self) -> Option<Track> {
         let tracks = self.tracks.read().await;
         let mut current_index = self.current_index.write().await;
-        
+
         if tracks.is_empty() {
             return None;
         }
-        
+
         let next_index = match *current_index {
             Some(index) => {
                 if index + 1 < tracks.len() {
@@ -94,19 +94,19 @@ impl Queue {
             }
             None => Some(0),
         };
-        
+
         *current_index = next_index;
         next_index.and_then(|i| tracks.get(i).cloned())
     }
-    
+
     pub async fn previous_track(&self) -> Option<Track> {
         let tracks = self.tracks.read().await;
         let mut current_index = self.current_index.write().await;
-        
+
         if tracks.is_empty() {
             return None;
         }
-        
+
         let prev_index = match *current_index {
             Some(index) => {
                 if index > 0 {
@@ -119,16 +119,16 @@ impl Queue {
             }
             None => Some(0),
         };
-        
+
         *current_index = prev_index;
         prev_index.and_then(|i| tracks.get(i).cloned())
     }
-    
+
     pub async fn len(&self) -> usize {
         let tracks = self.tracks.read().await;
         tracks.len()
     }
-    
+
     pub async fn clear(&self) {
         let mut tracks = self.tracks.write().await;
         let mut current_index = self.current_index.write().await;

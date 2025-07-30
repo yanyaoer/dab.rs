@@ -1,10 +1,10 @@
+use log::{debug, error, warn};
+use rodio::Source;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use rodio::Source;
-use log::{debug, warn, error};
 
-use crate::error::{DabResult, DabError};
 use super::decoder::AudioDecoder;
+use crate::error::{DabError, DabResult};
 
 pub struct DecodedAudioSource {
     decoder: Arc<Mutex<AudioDecoder>>,
@@ -19,7 +19,7 @@ impl DecodedAudioSource {
     pub fn new(decoder: AudioDecoder) -> Self {
         let sample_rate = decoder.sample_rate();
         let channels = decoder.channels();
-        
+
         Self {
             decoder: Arc::new(Mutex::new(decoder)),
             sample_rate,
@@ -29,12 +29,12 @@ impl DecodedAudioSource {
             finished: false,
         }
     }
-    
+
     fn load_next_frame(&mut self) -> bool {
         if self.finished {
             return false;
         }
-        
+
         let mut decoder = match self.decoder.lock() {
             Ok(decoder) => decoder,
             Err(e) => {
@@ -43,7 +43,7 @@ impl DecodedAudioSource {
                 return false;
             }
         };
-        
+
         match decoder.next_frame() {
             Ok(Some(samples)) => {
                 self.current_frame = samples;
@@ -66,7 +66,7 @@ impl DecodedAudioSource {
 
 impl Iterator for DecodedAudioSource {
     type Item = f32;
-    
+
     fn next(&mut self) -> Option<Self::Item> {
         // If we've consumed all samples in current frame, load next frame
         if self.frame_position >= self.current_frame.len() {
@@ -74,7 +74,7 @@ impl Iterator for DecodedAudioSource {
                 return None;
             }
         }
-        
+
         if self.frame_position < self.current_frame.len() {
             let sample = self.current_frame[self.frame_position];
             self.frame_position += 1;
@@ -93,15 +93,15 @@ impl Source for DecodedAudioSource {
             Some(self.current_frame.len() - self.frame_position)
         }
     }
-    
+
     fn channels(&self) -> u16 {
         self.channels
     }
-    
+
     fn sample_rate(&self) -> u32 {
         self.sample_rate
     }
-    
+
     fn total_duration(&self) -> Option<Duration> {
         // Could implement this by reading duration from decoder metadata
         None
