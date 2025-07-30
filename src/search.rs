@@ -24,20 +24,57 @@ pub struct DabTrack {
     pub id: u64,
     pub title: String,
     pub artist: String,
-    #[serde(rename = "artistId")]
+    #[serde(rename = "artistId", default)]
     pub artist_id: Option<u64>,
-    #[serde(rename = "albumTitle")]
+    #[serde(rename = "albumTitle", default)]
     pub album_title: Option<String>,
-    #[serde(rename = "albumCover")]
+    #[serde(rename = "albumCover", default)]
     pub album_cover: Option<String>,
-    #[serde(rename = "albumId")]
+    #[serde(rename = "albumId", default)]
     pub album_id: Option<String>,
-    #[serde(rename = "releaseDate")]
+    #[serde(rename = "releaseDate", default)]
     pub release_date: Option<String>,
+    #[serde(default)]
     pub genre: Option<String>,
+    #[serde(default)]
     pub duration: Option<u32>, // Duration in seconds
-    #[serde(rename = "audioQuality")]
+    #[serde(rename = "audioQuality", default)]
     pub audio_quality: Option<AudioQuality>,
+    // Additional fields present in API responses
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(rename = "labelId", default)]
+    pub label_id: Option<u64>,
+    #[serde(default)]
+    pub upc: Option<String>,
+    #[serde(rename = "mediaCount", default)]
+    pub media_count: Option<u32>,
+    #[serde(rename = "parental_warning", default)]
+    pub parental_warning: Option<bool>,
+    #[serde(default)]
+    pub streamable: Option<bool>,
+    #[serde(default)]
+    pub purchasable: Option<bool>,
+    #[serde(default)]
+    pub previewable: Option<bool>,
+    #[serde(rename = "genreId", default)]
+    pub genre_id: Option<u32>,
+    #[serde(rename = "genreSlug", default)]
+    pub genre_slug: Option<String>,
+    #[serde(rename = "genreColor", default)]
+    pub genre_color: Option<String>,
+    #[serde(rename = "releaseDateStream", default)]
+    pub release_date_stream: Option<String>,
+    #[serde(rename = "releaseDateDownload", default)]
+    pub release_date_download: Option<String>,
+    #[serde(rename = "maximumChannelCount", default)]
+    pub maximum_channel_count: Option<u32>,
+    #[serde(default)]
+    pub images: Option<serde_json::Value>, // Using generic JSON value for flexible image data
+    #[serde(default)]
+    pub isrc: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,25 +92,122 @@ pub struct DabAlbum {
     pub id: String,
     pub title: String,
     pub artist: String,
-    #[serde(rename = "releaseDate")]
+    #[serde(rename = "releaseDate", alias = "release_date")]
     pub release_date: Option<String>,
     pub genre: Option<String>,
     pub cover: Option<String>,
     pub tracks: Option<Vec<DabTrack>>,
-    #[serde(rename = "trackCount")]
+    #[serde(rename = "trackCount", alias = "track_count")]
     pub track_count: Option<u32>,
     pub duration: Option<u32>,
+    // Additional fields that might be in the API
+    #[serde(default)]
+    pub label: Option<AlbumLabel>,
+    #[serde(default)]
+    pub upc: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub streamable: Option<bool>,
+    #[serde(default)]
+    pub downloadable: Option<bool>,
+    #[serde(rename = "mediaCount", alias = "media_count", default)]
+    pub media_count: Option<u32>,
+    #[serde(
+        rename = "maximumChannelCount",
+        alias = "maximum_channel_count",
+        default
+    )]
+    pub maximum_channel_count: Option<u32>,
+    #[serde(rename = "parental_warning", default)]
+    pub parental_warning: Option<bool>,
+    #[serde(default)]
+    pub popularity: Option<u32>,
+    #[serde(rename = "audioQuality", alias = "audio_quality", default)]
+    pub audio_quality: Option<AudioQuality>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DabArtist {
-    pub id: String,
+    pub id: u64,
     pub name: String,
-    #[serde(rename = "albumsCount")]
+    #[serde(rename = "albumsCount", alias = "albums_count")]
     pub albums_count: Option<u32>,
+    #[serde(
+        rename = "albumsAsPrimaryArtistCount",
+        alias = "albums_as_primary_artist_count",
+        default
+    )]
+    pub albums_as_primary_artist_count: Option<u32>,
+    #[serde(
+        rename = "albumsAsPrimaryComposerCount",
+        alias = "albums_as_primary_composer_count",
+        default
+    )]
+    pub albums_as_primary_composer_count: Option<u32>,
     pub slug: Option<String>,
-    pub image: Option<String>,
-    pub biography: Option<String>,
+    pub image: Option<ArtistImage>,
+    pub biography: Option<ArtistBiography>,
+    #[serde(rename = "similarArtistIds", alias = "similar_artist_ids", default)]
+    pub similar_artist_ids: Option<Vec<u64>>,
+    #[serde(default)]
+    pub information: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtistImage {
+    pub small: Option<String>,
+    pub medium: Option<String>,
+    pub large: Option<String>,
+    pub extralarge: Option<String>,
+    pub mega: Option<String>,
+}
+
+impl std::fmt::Display for ArtistImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(ref large) = self.large {
+            write!(f, "{}", large)
+        } else if let Some(ref medium) = self.medium {
+            write!(f, "{}", medium)
+        } else if let Some(ref small) = self.small {
+            write!(f, "{}", small)
+        } else {
+            write!(f, "No image available")
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtistBiography {
+    pub summary: Option<String>,
+    pub content: Option<String>,
+}
+
+impl std::fmt::Display for ArtistBiography {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(ref summary) = self.summary {
+            write!(f, "{}", summary)
+        } else if let Some(ref content) = self.content {
+            // Show first 200 characters of content if no summary
+            let truncated = if content.len() > 200 {
+                format!("{}...", &content[..200])
+            } else {
+                content.clone()
+            };
+            write!(f, "{}", truncated)
+        } else {
+            write!(f, "No biography available")
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlbumLabel {
+    pub name: String,
+    pub id: u64,
+    pub albums_count: Option<u64>,
+    pub supplier_id: Option<u64>,
+    pub slug: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -237,22 +371,37 @@ impl DabMusicApi {
             .await?;
 
         if response.status().is_success() {
-            #[derive(Deserialize)]
+            let response_text = response.text().await.unwrap_or_default();
+            debug!("Raw album API response: {}", response_text);
+
+            // Try to parse as wrapped response first
+            #[derive(Deserialize, Debug)]
             struct AlbumResponse {
                 album: DabAlbum,
             }
 
-            match response.json::<AlbumResponse>().await {
+            match serde_json::from_str::<AlbumResponse>(&response_text) {
                 Ok(album_response) => {
                     info!("Got album info for: {}", album_id);
                     Ok(album_response.album)
                 }
-                Err(e) => {
-                    error!("Failed to parse album response: {}", e);
-                    Err(DabError::Network(format!(
-                        "Failed to parse album response: {}",
-                        e
-                    )))
+                Err(_) => {
+                    // If wrapped response fails, try direct album parsing
+                    debug!("Failed to parse as wrapped response, trying direct album parsing");
+                    match serde_json::from_str::<DabAlbum>(&response_text) {
+                        Ok(album) => {
+                            info!("Got album info for: {} (direct parsing)", album_id);
+                            Ok(album)
+                        }
+                        Err(e) => {
+                            error!("Failed to parse album response: {}", e);
+                            error!("Album response text: {}", response_text);
+                            Err(DabError::Network(format!(
+                                "Failed to parse album response: {}",
+                                e
+                            )))
+                        }
+                    }
                 }
             }
         } else {
@@ -323,23 +472,55 @@ impl DabMusicApi {
             .await?;
 
         if response.status().is_success() {
-            #[derive(Deserialize)]
+            let response_text = response.text().await.unwrap_or_default();
+            debug!("Raw discography API response: {}", response_text);
+
+            // Try to parse as wrapped response first
+            #[derive(Deserialize, Debug)]
             struct DiscographyResponse {
                 artist: DabArtist,
                 albums: Vec<DabAlbum>,
             }
 
-            match response.json::<DiscographyResponse>().await {
+            match serde_json::from_str::<DiscographyResponse>(&response_text) {
                 Ok(discography_response) => {
                     info!("Got discography for artist: {}", artist_id);
                     Ok((discography_response.artist, discography_response.albums))
                 }
                 Err(e) => {
-                    error!("Failed to parse discography response: {}", e);
-                    Err(DabError::Network(format!(
-                        "Failed to parse discography response: {}",
-                        e
-                    )))
+                    // Log the original parsing error
+                    debug!("Failed to parse as wrapped response: {}", e);
+
+                    // If wrapped response fails, try parsing as just albums array
+                    debug!("Trying albums array parsing");
+                    match serde_json::from_str::<Vec<DabAlbum>>(&response_text) {
+                        Ok(albums) => {
+                            info!("Got discography for artist: {} (albums only)", artist_id);
+                            // Create a minimal artist object
+                            let artist = DabArtist {
+                                id: artist_id.parse().unwrap_or(0),
+                                name: "Unknown Artist".to_string(),
+                                albums_count: Some(albums.len() as u32),
+                                albums_as_primary_artist_count: None,
+                                albums_as_primary_composer_count: None,
+                                slug: None,
+                                image: None,
+                                biography: None,
+                                similar_artist_ids: None,
+                                information: None,
+                            };
+                            Ok((artist, albums))
+                        }
+                        Err(e2) => {
+                            error!("Failed to parse discography response: {}", e2);
+                            error!("Discography response text: {}", response_text);
+                            error!("Original wrapped parsing error: {}", e);
+                            Err(DabError::Network(format!(
+                                "Failed to parse discography response: {}",
+                                e
+                            )))
+                        }
+                    }
                 }
             }
         } else {
@@ -447,6 +628,16 @@ impl DabMusicApi {
                         tracks: None,
                         track_count: Some(1),
                         duration: track.duration,
+                        label: None,
+                        upc: None,
+                        url: None,
+                        streamable: None,
+                        downloadable: None,
+                        media_count: None,
+                        maximum_channel_count: None,
+                        parental_warning: None,
+                        popularity: None,
+                        audio_quality: None,
                     });
                 }
             }
@@ -489,12 +680,16 @@ impl DabMusicApi {
                 // Create artists with proper album counts
                 for (artist_name, albums) in artist_album_count {
                     artists.push(DabArtist {
-                        id: format!("artist_{}", artist_name.replace(' ', "_")),
+                        id: Self::generate_artist_id(&artist_name),
                         name: artist_name,
                         albums_count: Some(albums.len() as u32),
+                        albums_as_primary_artist_count: None,
+                        albums_as_primary_composer_count: None,
                         slug: None,
                         image: None,
                         biography: None,
+                        similar_artist_ids: None,
+                        information: None,
                     });
                 }
             }
@@ -504,6 +699,15 @@ impl DabMusicApi {
         }
 
         Ok(artists)
+    }
+
+    fn generate_artist_id(artist_name: &str) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        artist_name.hash(&mut hasher);
+        hasher.finish()
     }
 }
 

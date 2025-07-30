@@ -3,7 +3,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use log::{error, info};
+use log::{debug, error, info};
 use ratatui::{
     backend::{Backend, CrosstermBackend},
     layout::{Constraint, Direction, Layout, Rect},
@@ -19,7 +19,7 @@ use crate::cache::Cache;
 use crate::error::{DabError, DabResult};
 use crate::library::{Album, Library};
 use crate::player::{PlayerEngine, PlayerEvent, PlayerState, Track};
-use crate::search::{DabAlbum, DabArtist, MusicSearchApi};
+use crate::search::{DabAlbum, DabArtist, DabTrack, MusicSearchApi};
 
 pub struct TuiApp {
     player: PlayerEngine,
@@ -37,6 +37,7 @@ pub struct TuiApp {
     search_mode: bool,
     search_query: String,
     search_results: Vec<Track>,
+    search_results_raw: Vec<DabTrack>, // Store original DabTrack data
     search_type: SearchType,
     // Extended album/artist detail views
     detailed_album: Option<DabAlbum>,
@@ -105,6 +106,7 @@ impl TuiApp {
             search_mode: false,
             search_query: String::new(),
             search_results: Vec::new(),
+            search_results_raw: Vec::new(),
             search_type: SearchType::Track,
             detailed_album: None,
             detailed_artist: None,
@@ -435,7 +437,8 @@ impl TuiApp {
                 artist
                     .biography
                     .as_ref()
-                    .unwrap_or(&"No biography available".to_string())
+                    .map(|b| b.to_string())
+                    .unwrap_or_else(|| "No biography available".to_string())
             );
 
             let artist_info = Paragraph::new(artist_info_text).block(
@@ -984,11 +987,47 @@ impl TuiApp {
 
         let search_results = match self.search_type {
             SearchType::Track => {
-                self.search_api
-                    .search_tracks_with_cache(&self.search_query, 20, Some(&*cache))
-                    .await?
+                // Get DabTrack results to store artist_id information
+                let search_result = self
+                    .search_api
+                    .search(&self.search_query, self.search_type.as_str(), 20)
+                    .await?;
+
+                let mut tracks = Vec::new();
+                let mut raw_tracks = Vec::new();
+
+                match search_result.results {
+                    crate::search::SearchResults::Tracks { tracks: dab_tracks } => {
+                        for dab_track in dab_tracks {
+                            let mut track: Track = dab_track.clone().into();
+
+                            // Check cache for existing URL
+                            if let Ok(Some(cached_url)) =
+                                cache.get_cached_url(&dab_track.id.to_string()).await
+                            {
+                                if !cached_url.is_empty() {
+                                    track.url = cached_url;
+                                }
+                            }
+
+                            tracks.push(track);
+                            raw_tracks.push(dab_track);
+                        }
+                    }
+                    _ => {
+                        // For compatibility with other search types that might return tracks
+                        debug!("Search result is not tracks, might be albums or artists");
+                    }
+                }
+
+                // Store raw DabTrack data for artist_id extraction
+                self.search_results_raw = raw_tracks;
+                tracks
             }
             SearchType::Album => {
+                // Clear raw tracks for album search
+                self.search_results_raw.clear();
+
                 // Get search results and extract albums from tracks
                 let search_result = self
                     .search_api
@@ -1048,6 +1087,9 @@ impl TuiApp {
                 tracks
             }
             SearchType::Artist => {
+                // Clear raw tracks for artist search
+                self.search_results_raw.clear();
+
                 // Get search results and extract artists from tracks
                 let search_result = self
                     .search_api
@@ -1063,14 +1105,14 @@ impl TuiApp {
                     } => {
                         for artist in dab_artists {
                             tracks.push(Track {
-                                id: artist.id.clone(),
+                                id: artist.id.to_string(),
                                 title: format!("[Artist] {}", artist.name),
                                 artist: artist.name.clone(),
                                 album: format!("{} albums", artist.albums_count.unwrap_or(0)),
                                 url: String::new(),
                                 duration_ms: 0,
                                 local_path: None,
-                                cover_url: artist.image,
+                                cover_url: artist.image.as_ref().and_then(|img| img.large.clone()),
                             });
                         }
                     }
@@ -1261,23 +1303,93 @@ impl TuiApp {
     }
 
     async fn show_artist_discography(&mut self, track: &Track) -> DabResult<()> {
+        self.status_message = Some(format!(
+            "Searching for artist discography: {}...",
+            track.artist
+        ));
+
+        // First try to get artist ID from track
         if let Some(artist_id) = self.extract_artist_id(track) {
-            self.status_message = Some(format!("Loading discography for {}...", track.artist));
+            info!(
+                "Using extracted artist ID: {} for artist '{}'",
+                artist_id, track.artist
+            );
 
             match self.search_api.get_artist_discography(&artist_id).await {
                 Ok((artist, albums)) => {
-                    self.detailed_artist = Some(artist);
-                    self.artist_albums = albums;
-                    self.switch_view(View::ArtistDiscography).await;
-                    self.status_message = Some("Artist discography loaded".to_string());
+                    // Check if we got valid artist information
+                    if artist.name != "Unknown Artist" && !albums.is_empty() {
+                        self.detailed_artist = Some(artist);
+                        self.artist_albums = albums;
+                        self.switch_view(View::ArtistDiscography).await;
+                        self.status_message = Some("Artist discography loaded".to_string());
+                        return Ok(());
+                    } else {
+                        info!("Got 'Unknown Artist' or no albums, trying artist search first");
+                    }
                 }
                 Err(e) => {
-                    self.status_message = Some(format!("Failed to load discography: {}", e));
+                    info!(
+                        "Direct discography call failed: {}, trying artist search",
+                        e
+                    );
                 }
             }
-        } else {
-            self.status_message = Some("No artist ID available for this track".to_string());
         }
+
+        // If direct approach failed, search for the artist first to get proper ID
+        info!("Searching for artist '{}' to get proper ID", track.artist);
+        match self.search_api.search(&track.artist, "artist", 10).await {
+            Ok(search_result) => {
+                if let crate::search::SearchResults::Artists { artists } = search_result.results {
+                    // Find the best matching artist
+                    for artist in artists {
+                        if artist.name.to_lowercase() == track.artist.to_lowercase() {
+                            info!(
+                                "Found matching artist: {} with ID: {}",
+                                artist.name, artist.id
+                            );
+
+                            match self
+                                .search_api
+                                .get_artist_discography(&artist.id.to_string())
+                                .await
+                            {
+                                Ok((detailed_artist, albums)) => {
+                                    let album_count = albums.len();
+                                    self.detailed_artist = Some(detailed_artist);
+                                    self.artist_albums = albums;
+                                    self.switch_view(View::ArtistDiscography).await;
+                                    self.status_message = Some(format!(
+                                        "Loaded {} albums for {}",
+                                        album_count, artist.name
+                                    ));
+                                    return Ok(());
+                                }
+                                Err(e) => {
+                                    self.status_message = Some(format!(
+                                        "Failed to load discography for {}: {}",
+                                        artist.name, e
+                                    ));
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    }
+                    self.status_message = Some(format!(
+                        "Artist '{}' not found in search results",
+                        track.artist
+                    ));
+                } else {
+                    self.status_message =
+                        Some("Artist search returned unexpected results".to_string());
+                }
+            }
+            Err(e) => {
+                self.status_message = Some(format!("Failed to search for artist: {}", e));
+            }
+        }
+
         Ok(())
     }
 
@@ -1313,19 +1425,42 @@ impl TuiApp {
         // Try to extract artist ID from track information
         if track.title.starts_with("[Artist]") {
             // This is an artist entry from search results
+            info!("Using artist ID from artist entry: {}", track.id);
             Some(track.id.clone())
         } else {
+            // First check if we have raw DabTrack data with artist_id field
+            for dab_track in &self.search_results_raw {
+                if dab_track.id.to_string() == track.id && dab_track.artist == track.artist {
+                    if let Some(artist_id) = dab_track.artist_id {
+                        info!(
+                            "Found artist_id in raw DabTrack data: {} for artist '{}'",
+                            artist_id, track.artist
+                        );
+                        return Some(artist_id.to_string());
+                    }
+                }
+            }
+
             // For regular tracks, check if we can find the artist ID in search results
             // Look for corresponding artist in search results by matching artist name
             for search_track in &self.search_results {
                 if search_track.title.starts_with("[Artist]") && search_track.artist == track.artist
                 {
+                    info!(
+                        "Found artist ID in search results: {} for artist '{}'",
+                        search_track.id, track.artist
+                    );
                     return Some(search_track.id.clone());
                 }
             }
 
-            // If not found in search results, construct artist ID using the pattern from search API
-            Some(format!("artist_{}", track.artist.replace(' ', "_")))
+            // If not found in search results, we'll return None so that show_artist_discography
+            // can handle it by searching for the artist first
+            info!(
+                "No artist ID found in search results for '{}', will search for artist",
+                track.artist
+            );
+            None
         }
     }
 }
