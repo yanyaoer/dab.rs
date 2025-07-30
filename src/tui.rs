@@ -604,51 +604,111 @@ impl TuiApp {
                     .await?
             }
             SearchType::Album => {
-                // Convert albums to tracks for display  
-                let albums = self.search_api
+                // Get search results and extract albums from tracks
+                let search_result = self.search_api
                     .search(&self.search_query, self.search_type.as_str(), 20)
                     .await?;
                 
                 let mut tracks = Vec::new();
-                if let crate::search::SearchResults::Albums { albums: dab_albums } = albums.results {
-                    for album in dab_albums {
-                        // Create a placeholder track for each album
-                        tracks.push(Track {
-                            id: album.id.clone(),
-                            title: format!("[Album] {}", album.title),
-                            artist: album.artist,
-                            album: album.title.clone(),
-                            url: String::new(),
-                            duration_ms: album.duration.map(|s| s * 1000).unwrap_or(0),
-                            local_path: None,
-                            cover_url: album.cover,
-                        });
+                
+                // Extract tracks first, regardless of the response format
+                match search_result.results {
+                    crate::search::SearchResults::Albums { albums: dab_albums } => {
+                        for album in dab_albums {
+                            tracks.push(Track {
+                                id: album.id.clone(),
+                                title: format!("[Album] {}", album.title),
+                                artist: album.artist,
+                                album: album.title.clone(),
+                                url: String::new(),
+                                duration_ms: album.duration.map(|s| s * 1000).unwrap_or(0),
+                                local_path: None,
+                                cover_url: album.cover,
+                            });
+                        }
                     }
+                    crate::search::SearchResults::Tracks { tracks: dab_tracks } => {
+                        // Extract unique albums from tracks
+                        let mut album_keys = std::collections::HashSet::new();
+                        
+                        for track in dab_tracks {
+                            let album_title = track.album_title.as_ref().map(|s| s.as_str()).unwrap_or("Unknown Album");
+                            let album_key = format!("{}:{}", track.artist, album_title);
+                            
+                            if album_keys.insert(album_key.clone()) {
+                                tracks.push(Track {
+                                    id: track.album_id.clone().unwrap_or_else(|| format!("album_{}", track.id)),
+                                    title: format!("[Album] {}", album_title),
+                                    artist: track.artist.clone(),
+                                    album: album_title.to_string(),
+                                    url: String::new(),
+                                    duration_ms: track.duration.map(|s| s * 1000).unwrap_or(0),
+                                    local_path: None,
+                                    cover_url: track.album_cover.clone(),
+                                });
+                            }
+                        }
+                    }
+                    _ => {}
                 }
+                
                 tracks
             }
             SearchType::Artist => {
-                // Convert artists to tracks for display
-                let artists = self.search_api
+                // Get search results and extract artists from tracks
+                let search_result = self.search_api
                     .search(&self.search_query, self.search_type.as_str(), 20)
                     .await?;
                 
                 let mut tracks = Vec::new();
-                if let crate::search::SearchResults::Artists { artists: dab_artists } = artists.results {
-                    for artist in dab_artists {
-                        // Create a placeholder track for each artist
-                        tracks.push(Track {
-                            id: artist.id.clone(),
-                            title: format!("[Artist] {}", artist.name),
-                            artist: artist.name.clone(),
-                            album: format!("{} albums", artist.albums_count.unwrap_or(0)),
-                            url: String::new(),
-                            duration_ms: 0,
-                            local_path: None,
-                            cover_url: artist.image,
-                        });
+                
+                // Extract tracks first, regardless of the response format
+                match search_result.results {
+                    crate::search::SearchResults::Artists { artists: dab_artists } => {
+                        for artist in dab_artists {
+                            tracks.push(Track {
+                                id: artist.id.clone(),
+                                title: format!("[Artist] {}", artist.name),
+                                artist: artist.name.clone(),
+                                album: format!("{} albums", artist.albums_count.unwrap_or(0)),
+                                url: String::new(),
+                                duration_ms: 0,
+                                local_path: None,
+                                cover_url: artist.image,
+                            });
+                        }
                     }
+                    crate::search::SearchResults::Tracks { tracks: dab_tracks } => {
+                        // Extract unique artists from tracks and count their albums
+                        let mut artist_album_count = std::collections::HashMap::new();
+                        
+                        for track in dab_tracks {
+                            let album_title = track.album_title.as_ref().map(|s| s.as_str()).unwrap_or("Unknown Album");
+                            
+                            // Count unique albums for each artist
+                            let albums_for_artist = artist_album_count
+                                .entry(track.artist.clone())
+                                .or_insert_with(|| std::collections::HashSet::new());
+                            albums_for_artist.insert(album_title.to_string());
+                        }
+                        
+                        // Create tracks for unique artists with proper album counts
+                        for (artist_name, albums) in artist_album_count {
+                            tracks.push(Track {
+                                id: format!("artist_{}", artist_name.replace(' ', "_")),
+                                title: format!("[Artist] {}", artist_name),
+                                artist: artist_name.clone(),
+                                album: format!("{} albums", albums.len()),
+                                url: String::new(),
+                                duration_ms: 0,
+                                local_path: None,
+                                cover_url: None,
+                            });
+                        }
+                    }
+                    _ => {}
                 }
+                
                 tracks
             }
         };

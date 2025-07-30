@@ -426,15 +426,25 @@ impl DabMusicApi {
                 artists = dab_artists;
             }
             SearchResults::Tracks { tracks } => {
-                // Convert tracks to artists (fallback for backward compatibility)
+                // Extract unique artists from tracks and count their albums
+                let mut artist_album_count = std::collections::HashMap::new();
+                
                 for track in tracks {
+                    let album_title = track.album_title.as_ref().map(|s| s.as_str()).unwrap_or("Unknown Album");
+                    
+                    // Count unique albums for each artist
+                    let albums_for_artist = artist_album_count
+                        .entry(track.artist.clone())
+                        .or_insert_with(|| std::collections::HashSet::new());
+                    albums_for_artist.insert(album_title.to_string());
+                }
+                
+                // Create artists with proper album counts
+                for (artist_name, albums) in artist_album_count {
                     artists.push(DabArtist {
-                        id: track
-                            .artist_id
-                            .map(|id| id.to_string())
-                            .unwrap_or_else(|| format!("artist_{}", track.id)),
-                        name: track.artist,
-                        albums_count: Some(1),
+                        id: format!("artist_{}", artist_name.replace(' ', "_")),
+                        name: artist_name,
+                        albums_count: Some(albums.len() as u32),
                         slug: None,
                         image: None,
                         biography: None,
