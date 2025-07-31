@@ -36,6 +36,15 @@ pub struct TuiApp {
     current_queue_index: Option<usize>,
     selected_album: Option<Album>,
     status_message: Option<String>,
+    // Player status display
+    current_track: Option<Track>,
+    player_state: PlayerState,
+    current_position_ms: u32,
+    track_duration_ms: u32,
+    // Header scrolling state
+    header_scroll_offset: usize,
+    header_scroll_direction: i8, // -1 for left, 1 for right, 0 for stopped
+    header_scroll_delay: u8,     // Counter for scroll timing
     // Search state
     search_mode: bool,
     search_query: String,
@@ -109,6 +118,16 @@ impl TuiApp {
             current_queue_index: None,
             selected_album: None,
             status_message: None,
+            // Player status display
+            current_track: None,
+            player_state: PlayerState::Stopped,
+            current_position_ms: 0,
+            track_duration_ms: 0,
+            // Header scrolling state
+            header_scroll_offset: 0,
+            header_scroll_direction: 0,
+            header_scroll_delay: 0,
+            // Search state
             search_mode: false,
             search_query: String::new(),
             search_results: Vec::new(),
@@ -134,6 +153,9 @@ impl TuiApp {
         self.refresh_tracks_list().await;
 
         loop {
+            // Update player status for header display
+            self.update_player_status().await;
+
             // Draw UI
             terminal.draw(|f| self.ui(f))?;
 
@@ -169,6 +191,105 @@ impl TuiApp {
         Ok(())
     }
 
+    async fn update_player_status(&mut self) {
+        // Update player status for header display
+        if let Ok(status) = self.player.get_status().await {
+            self.current_track = status.current_track;
+            self.player_state = status.state;
+            self.current_position_ms = status.position_ms;
+            self.track_duration_ms = status.duration_ms;
+        }
+
+        // Update header scrolling
+        self.update_header_scroll();
+    }
+
+    fn update_header_scroll(&mut self) {
+        // Only scroll if we have a current track and track info is longer than available space
+        if let Some(_) = &self.current_track {
+            self.header_scroll_delay = (self.header_scroll_delay + 1) % 30; // Slower scroll speed
+
+            if self.header_scroll_delay == 0 {
+                let track_text = self.format_current_track_info();
+                let app_title = "Dab Music Player";
+                let title_width = app_title.len();
+                
+                // Use a reasonable default width - will be calculated dynamically in render_header
+                let available_width: usize = 80; // This will be calculated dynamically in render_header
+                let remaining_width = available_width.saturating_sub(title_width + 3); // +3 for " | " separator
+
+                if track_text.len() > remaining_width {
+                    match self.header_scroll_direction {
+                        0 => {
+                            // Start scrolling right after a pause
+                            self.header_scroll_direction = 1;
+                            self.header_scroll_offset += 1;
+                        }
+                        1 => {
+                            // Scrolling right
+                            if self.header_scroll_offset + remaining_width >= track_text.len() {
+                                self.header_scroll_direction = -1; // Start scrolling left
+                            } else {
+                                self.header_scroll_offset += 1;
+                            }
+                        }
+                        -1 => {
+                            // Scrolling left
+                            if self.header_scroll_offset == 0 {
+                                self.header_scroll_direction = 0; // Pause before starting right scroll again
+                            } else {
+                                self.header_scroll_offset -= 1;
+                            }
+                        }
+                        _ => {}
+                    }
+                } else {
+                    // Track info fits, no scrolling needed
+                    self.header_scroll_offset = 0;
+                    self.header_scroll_direction = 0;
+                }
+            }
+        } else {
+            // No track playing, reset scroll
+            self.header_scroll_offset = 0;
+            self.header_scroll_direction = 0;
+        }
+    }
+
+    fn format_current_track_info(&self) -> String {
+        if let Some(track) = &self.current_track {
+            let position_str = Self::format_duration(self.current_position_ms);
+            let duration_str = if self.track_duration_ms > 0 {
+                Self::format_duration(self.track_duration_ms)
+            } else {
+                Self::format_duration(track.duration_ms)
+            };
+
+            let state_icon = match self.player_state {
+                PlayerState::Playing => "▶",
+                PlayerState::Paused => "⏸",
+                PlayerState::Stopped => "⏹",
+                PlayerState::Loading => "⏳",
+                PlayerState::Buffering => "⏳",
+            };
+
+            format!(
+                "{} {} - {} - {} [{}/{}]",
+                state_icon, track.artist, track.album, track.title, position_str, duration_str
+            )
+        } else {
+            // Return empty string when no track is playing, since "Dab Music Player" is shown separately
+            String::new()
+        }
+    }
+
+    fn format_duration(ms: u32) -> String {
+        let seconds = ms / 1000;
+        let minutes = seconds / 60;
+        let seconds = seconds % 60;
+        format!("{:02}:{:02}", minutes, seconds)
+    }
+
     fn ui(&mut self, f: &mut Frame) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -201,14 +322,68 @@ impl TuiApp {
     }
 
     fn render_header(&self, f: &mut Frame, area: Rect) {
-        let title = Paragraph::new("♪ Dab Music Player")
-            .style(
+        // Calculate available width for text (minus borders and padding)
+        let available_width = (area.width.saturating_sub(4)) as usize; // 2 for borders, 2 for padding
+        
+        // Fixed left title
+        let app_title = "Dab Music Player";
+        let title_width = app_title.len();
+        
+        // Calculate remaining width for track info
+        let remaining_width = available_width.saturating_sub(title_width + 3); // +3 for " | " separator
+        
+        let display_text = if let Some(_) = &self.current_track {
+            let track_info = self.format_current_track_info();
+            
+            if track_info.len() <= remaining_width {
+                // Track info fits, no scrolling needed
+                format!("{} | {}", app_title, track_info)
+            } else {
+                // Track info is too long, use scrolling for the track part only
+                let end_pos = (self.header_scroll_offset + remaining_width).min(track_info.len());
+                let scrolled_track_info = &track_info[self.header_scroll_offset..end_pos];
+                format!("{} | {}", app_title, scrolled_track_info)
+            }
+        } else {
+            // No track playing, just show the app title
+            app_title.to_string()
+        };
+
+        // Create the paragraph with styled text
+        let header_spans = if self.current_track.is_some() {
+            // When playing a track, use music-themed styling for track info
+            let separator_pos = display_text.find(" | ").unwrap_or(0);
+            vec![
+                // App title in cyan
+                Span::styled(
+                    &display_text[..separator_pos.min(display_text.len())],
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                // Separator and track info in green
+                Span::styled(
+                    &display_text[separator_pos..],
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]
+        } else {
+            // Default app title styling
+            vec![Span::styled(
+                display_text,
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
-            )
-            .block(Block::default().borders(Borders::ALL));
-        f.render_widget(title, area);
+            )]
+        };
+
+        let header = Paragraph::new(Line::from(header_spans))
+            .block(Block::default().borders(Borders::ALL))
+            .alignment(ratatui::layout::Alignment::Left);
+
+        f.render_widget(header, area);
     }
 
     fn render_library(&mut self, f: &mut Frame, area: Rect) {
@@ -257,11 +432,7 @@ impl TuiApp {
                 .iter()
                 .enumerate()
                 .map(|(i, track)| {
-                    let cached_indicator = if track.is_local() {
-                        " [local]"
-                    } else {
-                        ""
-                    };
+                    let cached_indicator = if track.is_local() { " [local]" } else { "" };
 
                     ListItem::new(Line::from(vec![
                         Span::styled(format!("{}. ", i + 1), Style::default().fg(Color::Gray)),
@@ -319,21 +490,22 @@ impl TuiApp {
                 .map(|(i, track)| {
                     let is_current = self.current_queue_index == Some(i);
                     let prefix = if is_current { "▶ " } else { "  " };
-                    
-                    let cached_indicator = if track.is_local() {
-                        " [local]"
-                    } else {
-                        ""
-                    };
+
+                    let cached_indicator = if track.is_local() { " [local]" } else { "" };
 
                     let style = if is_current {
-                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD)
                     } else {
                         Style::default()
                     };
 
                     ListItem::new(Line::from(vec![
-                        Span::styled(format!("{}{}. ", prefix, i + 1), Style::default().fg(Color::Gray)),
+                        Span::styled(
+                            format!("{}{}. ", prefix, i + 1),
+                            Style::default().fg(Color::Gray),
+                        ),
                         Span::styled(&track.title, style),
                         Span::raw(" - "),
                         Span::styled(&track.album, Style::default().fg(Color::Blue)),
@@ -357,10 +529,12 @@ impl TuiApp {
 
             f.render_stateful_widget(list, chunks[1], &mut self.queue_state);
         } else {
-            let empty_queue = Paragraph::new("Queue is empty\nAdd tracks from Library or Search views using 'a' key")
-                .block(Block::default().title("Empty Queue").borders(Borders::ALL))
-                .style(Style::default().fg(Color::Gray))
-                .wrap(ratatui::widgets::Wrap { trim: true });
+            let empty_queue = Paragraph::new(
+                "Queue is empty\nAdd tracks from Library or Search views using 'a' key",
+            )
+            .block(Block::default().title("Empty Queue").borders(Borders::ALL))
+            .style(Style::default().fg(Color::Gray))
+            .wrap(ratatui::widgets::Wrap { trim: true });
             f.render_widget(empty_queue, chunks[1]);
         }
     }
@@ -408,11 +582,7 @@ impl TuiApp {
                 .iter()
                 .enumerate()
                 .map(|(_i, track)| {
-                    let cached_indicator = if track.is_local() {
-                        " [local]"
-                    } else {
-                        ""
-                    };
+                    let cached_indicator = if track.is_local() { " [local]" } else { "" };
 
                     ListItem::new(Line::from(vec![
                         Span::styled(&track.artist, Style::default().fg(Color::Cyan)),
@@ -761,7 +931,9 @@ impl TuiApp {
                     if let Some(selected_index) = self.queue_state.selected() {
                         if selected_index < self.queue_tracks.len() {
                             let queue = self.player.get_queue();
-                            let _ = queue.send_command(crate::player::QueueCommand::JumpTo(selected_index)).await;
+                            let _ = queue
+                                .send_command(crate::player::QueueCommand::JumpTo(selected_index))
+                                .await;
                             if let Some(track) = self.queue_tracks.get(selected_index) {
                                 // Load and play using complete track object
                                 self.player.load_and_play_track(track.clone()).await?;
@@ -850,7 +1022,8 @@ impl TuiApp {
                         if let Some(album) = &self.detailed_album {
                             if let Some(tracks) = &album.tracks {
                                 // Convert DabTrack to Track objects
-                                let track_objects: Vec<Track> = tracks.iter()
+                                let track_objects: Vec<Track> = tracks
+                                    .iter()
                                     .map(|dab_track| Track::from_dab_track(dab_track))
                                     .collect();
 
@@ -876,7 +1049,9 @@ impl TuiApp {
                             .collect();
 
                         if !track_results.is_empty() {
-                            self.player.clear_and_play_tracks(track_results.clone()).await?;
+                            self.player
+                                .clear_and_play_tracks(track_results.clone())
+                                .await?;
                             self.status_message = Some(format!(
                                 "Cleared queue and added {} tracks from search results",
                                 track_results.len()
@@ -897,7 +1072,11 @@ impl TuiApp {
                     if let Some(selected_index) = self.queue_state.selected() {
                         if selected_index < self.queue_tracks.len() {
                             let queue = self.player.get_queue();
-                            let _ = queue.send_command(crate::player::QueueCommand::RemoveTrack(selected_index)).await;
+                            let _ = queue
+                                .send_command(crate::player::QueueCommand::RemoveTrack(
+                                    selected_index,
+                                ))
+                                .await;
                             self.refresh_queue().await;
                             self.status_message = Some("Track removed from queue".to_string());
                         }
@@ -953,7 +1132,11 @@ impl TuiApp {
                 let i = match self.queue_state.selected() {
                     Some(i) => {
                         if i == 0 {
-                            if self.queue_tracks.is_empty() { 0 } else { self.queue_tracks.len() - 1 }
+                            if self.queue_tracks.is_empty() {
+                                0
+                            } else {
+                                self.queue_tracks.len() - 1
+                            }
                         } else {
                             i - 1
                         }

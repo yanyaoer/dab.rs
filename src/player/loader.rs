@@ -37,10 +37,10 @@ impl AudioLoader {
             // This shouldn't happen since PlayerEngine now handles URL fetching
             return Err(DabError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "Track missing URL - PlayerEngine should have resolved this"
+                "Track missing URL - PlayerEngine should have resolved this",
             )));
         };
-        
+
         if track_url.starts_with('/') || track_url.starts_with("file://") {
             let path = track_url.strip_prefix("file://").unwrap_or(track_url);
             info!("Loading local track: {}", path);
@@ -52,13 +52,12 @@ impl AudioLoader {
         self.download_and_cache_track_url(track, track_url).await
     }
 
-    async fn download_and_cache_track_url(&self, track: &Track, url: &str) -> DabResult<Box<dyn ReadSeek>> {
-        let response = self
-            .http_client
-            .get(url)
-            .send()
-            .await?
-            .error_for_status()?;
+    async fn download_and_cache_track_url(
+        &self,
+        track: &Track,
+        url: &str,
+    ) -> DabResult<Box<dyn ReadSeek>> {
+        let response = self.http_client.get(url).send().await?.error_for_status()?;
 
         let content_length = response.content_length();
         let mut stream = response.bytes_stream();
@@ -106,7 +105,7 @@ impl AudioLoader {
         }
 
         info!("Preloading track: {}", track.title);
-        
+
         // For preloading, we can't get the URL without the PlayerEngine's help
         // This method is now primarily for cache checks
         if track.is_local() {
@@ -115,9 +114,12 @@ impl AudioLoader {
                 let _ = self.download_and_cache_track_url(track, local_path).await?;
             }
         } else {
-            debug!("Cannot preload online track {} without stream URL", track.id);
+            debug!(
+                "Cannot preload online track {} without stream URL",
+                track.id
+            );
         }
-        
+
         Ok(())
     }
 }

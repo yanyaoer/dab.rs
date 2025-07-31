@@ -1,6 +1,7 @@
 use log::{debug, info};
 use rodio::{OutputStream, OutputStreamHandle, Sink};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use super::audio_source::DecodedAudioSource;
 use super::decoder::AudioDecoder;
@@ -12,6 +13,10 @@ pub struct AudioSink {
     stream_handle: OutputStreamHandle,
     sink: Arc<Mutex<Option<Sink>>>,
     volume: Arc<Mutex<f32>>,
+    // Position tracking
+    start_time: Arc<Mutex<Option<Instant>>>,
+    paused_duration: Arc<Mutex<Duration>>,
+    last_pause_time: Arc<Mutex<Option<Instant>>>,
 }
 
 // Manually implement Send and Sync since rodio types don't implement them by default
@@ -31,6 +36,9 @@ impl AudioSink {
             stream_handle,
             sink: Arc::new(Mutex::new(None)),
             volume: Arc::new(Mutex::new(0.8)),
+            start_time: Arc::new(Mutex::new(None)),
+            paused_duration: Arc::new(Mutex::new(Duration::ZERO)),
+            last_pause_time: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -53,6 +61,11 @@ impl AudioSink {
         *self.sink.lock().unwrap() = Some(sink);
         *self.volume.lock().unwrap() = volume;
 
+        // Reset position tracking for new track
+        *self.start_time.lock().unwrap() = Some(Instant::now());
+        *self.paused_duration.lock().unwrap() = Duration::ZERO;
+        *self.last_pause_time.lock().unwrap() = None;
+
         info!("Started playback with audio decoder");
         Ok(())
     }
@@ -60,6 +73,8 @@ impl AudioSink {
     pub fn pause(&self) -> DabResult<()> {
         if let Some(ref sink) = *self.sink.lock().unwrap() {
             sink.pause();
+            // Record pause time for position tracking
+            *self.last_pause_time.lock().unwrap() = Some(Instant::now());
             info!("Playback paused");
         }
         Ok(())
@@ -68,6 +83,11 @@ impl AudioSink {
     pub fn resume(&self) -> DabResult<()> {
         if let Some(ref sink) = *self.sink.lock().unwrap() {
             sink.play();
+            // Update paused duration when resuming
+            if let Some(pause_time) = self.last_pause_time.lock().unwrap().take() {
+                let pause_duration = pause_time.elapsed();
+                *self.paused_duration.lock().unwrap() += pause_duration;
+            }
             info!("Playback resumed");
         }
         Ok(())
@@ -76,6 +96,10 @@ impl AudioSink {
     pub fn stop(&self) -> DabResult<()> {
         if let Some(sink) = self.sink.lock().unwrap().take() {
             sink.stop();
+            // Reset position tracking
+            *self.start_time.lock().unwrap() = None;
+            *self.paused_duration.lock().unwrap() = Duration::ZERO;
+            *self.last_pause_time.lock().unwrap() = None;
             info!("Playback stopped");
         }
         Ok(())
@@ -106,6 +130,30 @@ impl AudioSink {
             sink.empty()
         } else {
             true
+        }
+    }
+
+    /// Get current playback position in milliseconds
+    pub fn get_position_ms(&self) -> u32 {
+        let start_time_guard = self.start_time.lock().unwrap();
+        let paused_duration_guard = self.paused_duration.lock().unwrap();
+        let last_pause_time_guard = self.last_pause_time.lock().unwrap();
+        
+        if let Some(start_time) = *start_time_guard {
+            let total_elapsed = start_time.elapsed();
+            let current_paused_duration = if let Some(pause_time) = *last_pause_time_guard {
+                // Currently paused, add current pause duration
+                *paused_duration_guard + pause_time.elapsed()
+            } else {
+                // Not currently paused
+                *paused_duration_guard
+            };
+            
+            // Subtract paused time from total elapsed time
+            let playback_position = total_elapsed.saturating_sub(current_paused_duration);
+            playback_position.as_millis() as u32
+        } else {
+            0
         }
     }
 }

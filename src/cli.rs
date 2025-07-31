@@ -114,7 +114,7 @@ impl Cli {
                 let queue = player.get_queue();
                 let tracks = queue.get_queue().await;
                 let current_index = queue.get_current_index().await;
-                
+
                 if tracks.is_empty() {
                     println!("Queue is empty");
                 } else {
@@ -123,14 +123,20 @@ impl Cli {
                         println!("Current playing: #{}", current + 1);
                     }
                     println!();
-                    
+
                     for (i, track) in tracks.iter().enumerate() {
                         let is_current = current_index == Some(i);
                         let prefix = if is_current { "▶ " } else { "  " };
-                        
-                        println!("{}{}. {} - {} ({})", 
-                                 prefix, i + 1, track.artist, track.title, track.album);
-                        
+
+                        println!(
+                            "{}{}. {} - {} ({})",
+                            prefix,
+                            i + 1,
+                            track.artist,
+                            track.title,
+                            track.album
+                        );
+
                         if track.duration_ms > 0 {
                             let total_seconds = track.duration_ms / 1000;
                             let minutes = total_seconds / 60;
@@ -204,9 +210,21 @@ impl Cli {
 
                                     // Show track metadata for online sources
                                     if track.requires_stream_url() {
-                                        eprintln!("   Track ID: {}", track.track_id.as_ref().unwrap_or(&"Unknown".to_string()));
+                                        eprintln!(
+                                            "   Track ID: {}",
+                                            track
+                                                .track_id
+                                                .as_ref()
+                                                .unwrap_or(&"Unknown".to_string())
+                                        );
                                     } else if track.is_local() {
-                                        eprintln!("   Local file: {}", track.local_path.as_ref().unwrap_or(&"Unknown".to_string()));
+                                        eprintln!(
+                                            "   Local file: {}",
+                                            track
+                                                .local_path
+                                                .as_ref()
+                                                .unwrap_or(&"Unknown".to_string())
+                                        );
                                     }
 
                                     if let Some(cover_url) = &track.cover_url {

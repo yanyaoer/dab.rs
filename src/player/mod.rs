@@ -8,7 +8,7 @@ mod queue;
 mod sink;
 
 pub use engine::PlayerEngine;
-pub use queue::{Queue, Track, QueueCommand, QueueEvent, RepeatMode};
+pub use queue::{Queue, QueueCommand, QueueEvent, RepeatMode, Track};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayerStatus {
@@ -32,7 +32,7 @@ pub enum PlayerState {
 
 #[derive(Debug)]
 pub enum PlayerCommand {
-    LoadAndPlay(String), // Keep for backwards compatibility
+    LoadAndPlay(String),     // Keep for backwards compatibility
     LoadAndPlayTrack(Track), // New command that accepts Track directly
     Play,
     Pause,
@@ -41,11 +41,11 @@ pub enum PlayerCommand {
     Next,
     Previous,
     Seek(u32),
-    AddToQueue(String), // Keep for backwards compatibility
-    AddTrackToQueue(Track), // New command that accepts Track directly
-    AddNext(String), // Keep for backwards compatibility
-    AddTrackNext(Track), // New command that accepts Track directly
-    ClearAndPlay(Vec<String>), // Keep for backwards compatibility
+    AddToQueue(String),             // Keep for backwards compatibility
+    AddTrackToQueue(Track),         // New command that accepts Track directly
+    AddNext(String),                // Keep for backwards compatibility
+    AddTrackNext(Track),            // New command that accepts Track directly
+    ClearAndPlay(Vec<String>),      // Keep for backwards compatibility
     ClearAndPlayTracks(Vec<Track>), // New command that accepts Tracks directly
     SetVolume(f32),
     SetRepeatMode(RepeatMode),

@@ -8,7 +8,7 @@ You run in an environment where ast-grep is available; whenever a search require
 - 为模块核心功能提供健壮的单元测试, 每次改动后进行同步验证确保播放引擎正确工作
 
 - 适配 ./resource/openapi.yaml 支持在线曲库的搜索和下载接口
-    - TUI 中按键 / 进行搜索
+    - 按键 / 进行搜索
     - 支持命令 dab search 'query' 搜索歌曲
     - @resource/openapi.yaml 搜索服务和对应的在线曲库的接口请参考这个文档描述来实现, 获取歌曲资源的 url 进行流式播放以及缓存管理
     - 使用 api 的 search, discography 和 album 接口, 获取对应的专辑列表和专辑详情
@@ -22,7 +22,7 @@ You run in an environment where ast-grep is available; whenever a search require
     - 支持流式加载本地和在线音频文件, 一边加载一边播放
     - 使用 tokio channel 作为通信机制, 确保播放服务为异步非阻塞模式运行, 与 ui 或者命令行交互时及时响应
     - 支持 dab play/pause/next/prev 等命令操作播放服务
-    - 支持 dab queue 'https://collie.fouland.com/audio/love_papa.mp3' 添加本地文件和在线文件到播放列表
+    - 支持 dab queue 'http://www.xiledradio.com/shows/XiledRadio-Show376.mp3' 添加本地文件和在线文件到播放列表
     - stream url 有过期时间导致后续无法播放, 在播放列表应使用 track 信息记录和展示，进行播放或者预加载时再去请求 stream url 并支持流式播放
 
 - 支持本地文件缓存, 优先读取和播放本地音频文件
@@ -34,6 +34,8 @@ You run in an environment where ast-grep is available; whenever a search require
 
 - 支持 kitty 图片协议, 选中歌曲时将歌曲封面作为背景图片显示在右下角
 - 在封面图底部显示 TUI 风格的音频播放可视化效果
+- TUI header 内显示当前播放的曲目信息和 duration，播放信息的文本右对齐，长度超过当前窗口时左右滚动显示
+    | Dab Music Player |                 track - album - artist | duration |
 
 - 在任意界面的歌曲列表上, 快捷键设置
     -  @resource/openapi.yaml 使用api里的 discography 和 album 接口, 
@@ -41,6 +43,7 @@ You run in an environment where ast-grep is available; whenever a search require
         - 按键 h 展示该歌手的介绍信息和专辑列表
     - 按键 j 选择下一个条目
     - 按键 k 选择上一个条目
+    - 按键 / 进行搜索
     - 按键 a 添加当前歌曲到播放队列的下一首
     - 按键 A 清空当前播放队列, 将当前界面的所有歌曲写入播放队列
 

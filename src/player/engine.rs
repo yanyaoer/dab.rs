@@ -5,9 +5,9 @@ use tokio::sync::{mpsc, oneshot, RwLock};
 
 use super::decoder::AudioDecoder;
 use super::loader::AudioLoader;
-use super::sink::AudioSink;
 use super::queue::StreamUrl;
-use super::{PlayerCommand, PlayerEvent, PlayerState, PlayerStatus, Queue, Track, RepeatMode};
+use super::sink::AudioSink;
+use super::{PlayerCommand, PlayerEvent, PlayerState, PlayerStatus, Queue, RepeatMode, Track};
 use crate::cache::Cache;
 use crate::error::{DabError, DabResult};
 use crate::search::MusicSearchApi;
@@ -90,8 +90,10 @@ impl PlayerEngine {
         audio_sink: Arc<RwLock<AudioSink>>,
     ) {
         let search_api = Arc::new(MusicSearchApi::new());
-        let stream_url_cache = Arc::new(RwLock::new(std::collections::HashMap::<String, StreamUrl>::new()));
-        
+        let stream_url_cache = Arc::new(RwLock::new(
+            std::collections::HashMap::<String, StreamUrl>::new(),
+        ));
+
         info!("Player engine started");
 
         // Start auto-advance monitoring task
@@ -107,7 +109,7 @@ impl PlayerEngine {
             let stream_url_cache = stream_url_cache.clone();
             let position_ms = position_ms.clone();
             let volume = volume.clone();
-            
+
             tokio::spawn(async move {
                 Self::auto_advance_monitor(
                     state,
@@ -121,7 +123,8 @@ impl PlayerEngine {
                     stream_url_cache,
                     position_ms,
                     volume,
-                ).await;
+                )
+                .await;
             })
         };
 
@@ -170,13 +173,15 @@ impl PlayerEngine {
             PlayerCommand::LoadAndPlay(track_identifier) => {
                 // Try to find the track in the queue first
                 let queue_tracks = queue.get_queue().await;
-                let track = if let Some(found_track) = queue_tracks.iter().find(|t| t.id == track_identifier || t.local_path.as_ref() == Some(&track_identifier)) {
+                let track = if let Some(found_track) = queue_tracks.iter().find(|t| {
+                    t.id == track_identifier || t.local_path.as_ref() == Some(&track_identifier)
+                }) {
                     found_track.clone()
                 } else {
                     // Fallback: create track from URL for backwards compatibility
                     Track::from_url(&track_identifier)
                 };
-                
+
                 Self::load_and_play_track_internal(
                     &track,
                     event_tx,
@@ -313,9 +318,10 @@ impl PlayerEngine {
             }
             PlayerCommand::AddToQueue(track_identifier) => {
                 // Try to resolve track from identifier - could be URL, track ID, or local path
-                let track = Self::resolve_track_from_identifier(&track_identifier, search_api).await
+                let track = Self::resolve_track_from_identifier(&track_identifier, search_api)
+                    .await
                     .unwrap_or_else(|_| Track::from_url(&track_identifier));
-                
+
                 queue.add_track(track.clone()).await;
                 let _ = event_tx.send(PlayerEvent::QueueChanged);
 
@@ -341,9 +347,10 @@ impl PlayerEngine {
             }
             PlayerCommand::AddNext(track_identifier) => {
                 // Try to resolve track from identifier
-                let track = Self::resolve_track_from_identifier(&track_identifier, search_api).await
+                let track = Self::resolve_track_from_identifier(&track_identifier, search_api)
+                    .await
                     .unwrap_or_else(|_| Track::from_url(&track_identifier));
-                
+
                 queue.add_track_next(track).await;
                 let _ = event_tx.send(PlayerEvent::QueueChanged);
             }
@@ -355,7 +362,8 @@ impl PlayerEngine {
                 queue.clear().await;
                 for identifier in track_identifiers {
                     // Try to resolve each track from identifier
-                    let track = Self::resolve_track_from_identifier(&identifier, search_api).await
+                    let track = Self::resolve_track_from_identifier(&identifier, search_api)
+                        .await
                         .unwrap_or_else(|_| Track::from_url(&identifier));
                     queue.add_track(track).await;
                 }
@@ -410,7 +418,10 @@ impl PlayerEngine {
             }
             PlayerCommand::SetRepeatMode(mode) => {
                 *repeat_mode.write().await = mode;
-                if let Err(e) = queue.send_command(super::queue::QueueCommand::SetRepeat(mode)).await {
+                if let Err(e) = queue
+                    .send_command(super::queue::QueueCommand::SetRepeat(mode))
+                    .await
+                {
                     warn!("Failed to set repeat mode in queue: {}", e);
                 }
                 let _ = event_tx.send(PlayerEvent::RepeatModeChanged(mode));
@@ -494,7 +505,8 @@ impl PlayerEngine {
     }
 
     pub async fn load_and_play_track(&mut self, track: Track) -> DabResult<()> {
-        self.send_command(PlayerCommand::LoadAndPlayTrack(track)).await
+        self.send_command(PlayerCommand::LoadAndPlayTrack(track))
+            .await
     }
 
     pub async fn play(&mut self) -> DabResult<()> {
@@ -527,7 +539,8 @@ impl PlayerEngine {
     }
 
     pub async fn add_track_to_queue(&mut self, track: Track) -> DabResult<()> {
-        self.send_command(PlayerCommand::AddTrackToQueue(track)).await
+        self.send_command(PlayerCommand::AddTrackToQueue(track))
+            .await
     }
 
     pub async fn add_next(&mut self, url: &str) -> DabResult<()> {
@@ -544,7 +557,8 @@ impl PlayerEngine {
     }
 
     pub async fn clear_and_play_tracks(&mut self, tracks: Vec<Track>) -> DabResult<()> {
-        self.send_command(PlayerCommand::ClearAndPlayTracks(tracks)).await
+        self.send_command(PlayerCommand::ClearAndPlayTracks(tracks))
+            .await
     }
 
     pub async fn get_status(&mut self) -> DabResult<PlayerStatus> {
@@ -578,7 +592,7 @@ impl PlayerEngine {
         }
         None
     }
-    
+
     pub fn get_queue(&self) -> Arc<Queue> {
         self.queue.clone()
     }
@@ -632,7 +646,10 @@ impl PlayerEngine {
         search_api: &Arc<MusicSearchApi>,
     ) -> DabResult<Track> {
         // If it looks like a local path or URL, create track from URL
-        if identifier.starts_with("/") || identifier.starts_with("file://") || identifier.starts_with("http") {
+        if identifier.starts_with("/")
+            || identifier.starts_with("file://")
+            || identifier.starts_with("http")
+        {
             return Ok(Track::from_url(identifier));
         }
 
@@ -671,24 +688,28 @@ impl PlayerEngine {
         volume: Arc<RwLock<f32>>,
     ) {
         let mut interval = tokio::time::interval(Duration::from_millis(100));
-        
+
         info!("Auto-advance monitor started");
-        
+
         loop {
             interval.tick().await;
-            
+
             // Check if we're currently playing and the sink is empty (track ended)
             let current_state = state.read().await.clone();
             if current_state == PlayerState::Playing {
-                let is_empty = audio_sink.read().await.is_empty();
+                // Update position continuously during playback
+                let current_position = audio_sink.read().await.get_position_ms();
+                *position_ms.write().await = current_position;
                 
+                let is_empty = audio_sink.read().await.is_empty();
+
                 if is_empty {
                     // Track has ended, handle auto-advance
                     info!("Track ended, handling auto-advance");
                     let _ = event_tx.send(PlayerEvent::TrackEnded);
-                    
+
                     let current_repeat_mode = *repeat_mode.read().await;
-                    
+
                     match current_repeat_mode {
                         RepeatMode::One => {
                             // Repeat current track
@@ -707,7 +728,9 @@ impl PlayerEngine {
                                     &audio_sink,
                                     &search_api,
                                     &stream_url_cache,
-                                ).await {
+                                )
+                                .await
+                                {
                                     error!("Failed to repeat track: {}", e);
                                     let _ = event_tx.send(PlayerEvent::Error(e.to_string()));
                                 }
@@ -730,7 +753,9 @@ impl PlayerEngine {
                                     &audio_sink,
                                     &search_api,
                                     &stream_url_cache,
-                                ).await {
+                                )
+                                .await
+                                {
                                     error!("Failed to advance to next track: {}", e);
                                     let _ = event_tx.send(PlayerEvent::Error(e.to_string()));
                                 }
@@ -740,7 +765,8 @@ impl PlayerEngine {
                                 *state.write().await = PlayerState::Stopped;
                                 *current_track.write().await = None;
                                 *position_ms.write().await = 0;
-                                let _ = event_tx.send(PlayerEvent::StateChanged(PlayerState::Stopped));
+                                let _ =
+                                    event_tx.send(PlayerEvent::StateChanged(PlayerState::Stopped));
                             }
                         }
                     }
