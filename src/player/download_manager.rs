@@ -225,7 +225,7 @@ impl AsyncDownloadManager {
         cache: Arc<RwLock<Cache>>,
         event_tx: mpsc::UnboundedSender<DownloadEvent>,
     ) -> DabResult<DownloadTask> {
-        let streaming_source = Arc::new(StreamingAudioSource::new(2, 50)); // 2MB min, 50MB max
+        let streaming_source = Arc::new(StreamingAudioSource::new(10, 200)); // 10MB min, 200MB max
         let cancel_token = CancellationToken::new();
         let progress = Arc::new(AtomicU32::new(0));
         let bytes_downloaded = Arc::new(AtomicU32::new(0));

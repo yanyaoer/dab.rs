@@ -19,8 +19,10 @@ pub struct StreamingAudioSource {
 pub struct ByteBuffer {
     data: Vec<u8>,
     write_position: usize,
+    read_position: usize,  // Track read position within buffer
     min_buffer_size: usize,
     max_buffer_size: usize,
+    is_circular: bool,      // Enable circular buffer mode for large files
 }
 
 impl StreamingAudioSource {
@@ -110,24 +112,56 @@ impl Read for StreamingAudioSource {
 
 impl StreamingAudioSource {
     fn sync_read_fallback(&self, buf: &mut [u8], current_position: usize) -> std::io::Result<usize> {
-        // Simple fallback for sync reads - try to read from buffer if available
+        // Improved fallback for sync reads with better error handling
         let buffer_guard = match self.buffer.try_read() {
             Ok(guard) => guard,
-            Err(_) => return Err(std::io::Error::new(
-                std::io::ErrorKind::WouldBlock,
-                "Buffer locked"
-            ))
+            Err(_) => {
+                // If buffer is locked, wait a short time and try again
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                match self.buffer.try_read() {
+                    Ok(guard) => guard,
+                    Err(_) => return Err(std::io::Error::new(
+                        std::io::ErrorKind::WouldBlock,
+                        "Buffer temporarily unavailable"
+                    ))
+                }
+            }
         };
         
-        let available_bytes = buffer_guard.get_available_bytes();
-        if current_position >= available_bytes {
-            if self.is_download_complete() {
-                return Ok(0); // EOF
-            } else {
+        // Check if we have data available at the current position
+        let (buffer_start, buffer_size, _) = buffer_guard.get_buffer_info();
+        
+        if buffer_guard.is_circular {
+            // For circular buffer, check if position is within our window
+            if current_position < buffer_start {
                 return Err(std::io::Error::new(
-                    std::io::ErrorKind::WouldBlock,
-                    "No data available yet"
+                    std::io::ErrorKind::UnexpectedEof,
+                    "Position is behind current buffer window"
                 ));
+            }
+            
+            let buffer_position = current_position - buffer_start;
+            if buffer_position >= buffer_size {
+                if self.is_download_complete() {
+                    return Ok(0); // EOF
+                } else {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::WouldBlock,
+                        "Data not available yet"
+                    ));
+                }
+            }
+        } else {
+            // For linear buffer
+            if current_position >= buffer_size {
+                if self.is_download_complete() {
+                    return Ok(0); // EOF
+                } else {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::WouldBlock,
+                        "Data not available yet"
+                    ));
+                }
             }
         }
         
@@ -211,12 +245,22 @@ impl ByteBuffer {
         Self {
             data: Vec::with_capacity(min_buffer_size),
             write_position: 0,
+            read_position: 0,
             min_buffer_size,
             max_buffer_size,
+            is_circular: true, // Always enable circular buffer for streaming
         }
     }
 
     fn write_data(&mut self, data: &[u8]) -> DabResult<()> {
+        if self.is_circular {
+            self.write_data_circular(data)
+        } else {
+            self.write_data_linear(data)
+        }
+    }
+
+    fn write_data_linear(&mut self, data: &[u8]) -> DabResult<()> {
         // Check if adding this data would exceed max buffer size
         if self.data.len() + data.len() > self.max_buffer_size {
             return Err(DabError::Io(std::io::Error::new(
@@ -231,7 +275,43 @@ impl ByteBuffer {
         Ok(())
     }
 
-    fn read_at_position(&self, position: usize, buf: &mut [u8]) -> std::io::Result<usize> {
+    fn write_data_circular(&mut self, data: &[u8]) -> DabResult<()> {
+        // For circular buffer, we maintain a sliding window
+        let incoming_len = data.len();
+        
+        // If buffer is full, make room by removing old data from the beginning
+        if self.data.len() + incoming_len > self.max_buffer_size {
+            let bytes_to_remove = (self.data.len() + incoming_len) - self.max_buffer_size;
+            let bytes_to_remove = bytes_to_remove.max(incoming_len); // Remove at least the incoming size
+            
+            // Remove old data from the beginning
+            if bytes_to_remove < self.data.len() {
+                self.data.drain(0..bytes_to_remove);
+                self.read_position = self.read_position.saturating_sub(bytes_to_remove);
+            } else {
+                // Clear entire buffer if we need to remove more than we have
+                self.data.clear();
+                self.read_position = 0;
+            }
+            
+            debug!("Circular buffer: removed {} bytes, remaining: {}", bytes_to_remove, self.data.len());
+        }
+
+        self.data.extend_from_slice(data);
+        self.write_position += data.len();
+        debug!("Written {} bytes to circular buffer, total: {}", data.len(), self.data.len());
+        Ok(())
+    }
+
+    fn read_at_position(&self, global_position: usize, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.is_circular {
+            self.read_at_position_circular(global_position, buf)
+        } else {
+            self.read_at_position_linear(global_position, buf)
+        }
+    }
+
+    fn read_at_position_linear(&self, position: usize, buf: &mut [u8]) -> std::io::Result<usize> {
         if position >= self.data.len() {
             return Ok(0); // EOF
         }
@@ -246,13 +326,60 @@ impl ByteBuffer {
         Ok(to_read)
     }
 
+    fn read_at_position_circular(&self, global_position: usize, buf: &mut [u8]) -> std::io::Result<usize> {
+        // For circular buffer, we need to map global position to buffer position
+        let buffer_start_position = self.write_position.saturating_sub(self.data.len());
+        
+        if global_position < buffer_start_position {
+            // Requested position is before our current buffer window
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Position is before current buffer window"
+            ));
+        }
+        
+        let buffer_position = global_position - buffer_start_position;
+        if buffer_position >= self.data.len() {
+            return Ok(0); // EOF or beyond current buffer
+        }
+
+        let available = self.data.len() - buffer_position;
+        let to_read = buf.len().min(available);
+        
+        if to_read > 0 {
+            buf[..to_read].copy_from_slice(&self.data[buffer_position..buffer_position + to_read]);
+        }
+        
+        Ok(to_read)
+    }
+
     fn has_enough_data_for_playback(&self, current_position: usize) -> bool {
-        let available_from_position = self.data.len().saturating_sub(current_position);
-        available_from_position >= self.min_buffer_size
+        if self.is_circular {
+            let buffer_start_position = self.write_position.saturating_sub(self.data.len());
+            if current_position < buffer_start_position {
+                return false; // Position is before our buffer window
+            }
+            let buffer_position = current_position - buffer_start_position;
+            let available_from_position = self.data.len().saturating_sub(buffer_position);
+            available_from_position >= self.min_buffer_size
+        } else {
+            let available_from_position = self.data.len().saturating_sub(current_position);
+            available_from_position >= self.min_buffer_size
+        }
     }
 
     fn get_available_bytes(&self) -> usize {
         self.data.len()
+    }
+
+    fn get_buffer_info(&self) -> (usize, usize, usize) {
+        // Returns (buffer_start_global_position, buffer_size, write_position)
+        if self.is_circular {
+            let buffer_start = self.write_position.saturating_sub(self.data.len());
+            (buffer_start, self.data.len(), self.write_position)
+        } else {
+            (0, self.data.len(), self.write_position)
+        }
     }
 }
 
@@ -282,7 +409,7 @@ mod tests {
 
     #[test]
     async fn test_streaming_read_write() {
-        let mut source = StreamingAudioSource::new(0, 10); // 0 min for testing
+        let mut source = StreamingAudioSource::new(0, 10); // 0 min for testing, 10MB max
         
         let test_data = b"Test streaming data";
         source.write_data(test_data).await.unwrap();
