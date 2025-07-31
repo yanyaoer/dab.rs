@@ -31,7 +31,7 @@ pub enum LoadResult {
 impl AudioLoader {
     pub async fn new(cache: Cache) -> DabResult<Self> {
         let download_manager = Arc::new(AsyncDownloadManager::new(cache.clone()).await?);
-        
+
         Ok(Self {
             http_client: Client::new(),
             cache: Arc::new(tokio::sync::RwLock::new(cache)),
@@ -70,11 +70,17 @@ impl AudioLoader {
     }
 
     /// Load track for streaming playback (new method - starts playback while downloading)
-    pub async fn load_track_streaming(&self, track: &Track, stream_url: &str) -> DabResult<LoadResult> {
+    pub async fn load_track_streaming(
+        &self,
+        track: &Track,
+        stream_url: &str,
+    ) -> DabResult<LoadResult> {
         // First check if we have a local cached version
         if let Some(cached_path) = self.cache.write().await.get_track_path(&track.id).await? {
             info!("Loading track from cache: {}", cached_path.display());
-            return Ok(LoadResult::Seekable(Box::new(std::fs::File::open(cached_path)?)));
+            return Ok(LoadResult::Seekable(Box::new(std::fs::File::open(
+                cached_path,
+            )?)));
         }
 
         // Check if it's a local file
@@ -98,7 +104,8 @@ impl AudioLoader {
 
         // Start streaming download
         info!("Starting streaming download for track: {}", track.id);
-        let (streaming_source, events) = self.download_manager
+        let (streaming_source, events) = self
+            .download_manager
             .start_download(track.clone(), stream_url.to_string())
             .await?;
 
@@ -209,8 +216,14 @@ impl AudioLoader {
         let download_manager = self.download_manager.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = download_manager.start_download(track_clone.clone(), stream_url_clone).await {
-                warn!("Failed to start preload for track {}: {}", track_clone.id, e);
+            if let Err(e) = download_manager
+                .start_download(track_clone.clone(), stream_url_clone)
+                .await
+            {
+                warn!(
+                    "Failed to start preload for track {}: {}",
+                    track_clone.id, e
+                );
             }
         });
 

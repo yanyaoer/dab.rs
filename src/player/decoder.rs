@@ -72,7 +72,40 @@ impl Read for StreamingWrapper {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         // Clone the source for async operation
         let mut source_clone = (*self.source).clone();
-        source_clone.read(buf)
+
+        // Try reading, but handle WouldBlock by waiting a bit
+        match source_clone.read(buf) {
+            Ok(bytes_read) => Ok(bytes_read),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                // For streaming, wait a short time and retry
+                std::thread::sleep(std::time::Duration::from_millis(10));
+
+                // Try again with longer timeout for better data availability
+                let mut retry_count = 0;
+                while retry_count < 100 {
+                    // Max 1 second wait
+                    match source_clone.read(buf) {
+                        Ok(bytes_read) => return Ok(bytes_read),
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                            retry_count += 1;
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+
+                // If still no data after waiting, check if download is complete
+                if self.source.is_download_complete() {
+                    Ok(0) // EOF
+                } else {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "Timeout waiting for streaming data",
+                    ))
+                }
+            }
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -168,7 +201,9 @@ impl AudioDecoder {
             .tracks()
             .iter()
             .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-            .ok_or_else(|| DabError::Decode("No supported audio tracks found in stream".to_string()))?;
+            .ok_or_else(|| {
+                DabError::Decode("No supported audio tracks found in stream".to_string())
+            })?;
 
         let track_id = track.id;
         let codec_params = &track.codec_params;

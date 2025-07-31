@@ -501,7 +501,7 @@ impl PlayerEngine {
             LoadResult::Seekable(audio_source) => {
                 // Traditional seekable playback
                 let decoder = AudioDecoder::from_seekable(audio_source)?;
-                
+
                 // Stop any current playback
                 audio_sink.read().await.stop()?;
 
@@ -524,11 +524,13 @@ impl PlayerEngine {
             LoadResult::Streaming { source, events } => {
                 // Streaming playback
                 info!("Starting streaming playback for: {}", track.title);
-                
+
                 // Set buffering state
                 *state.write().await = PlayerState::Buffering;
                 let _ = event_tx.send(PlayerEvent::StateChanged(PlayerState::Buffering));
-                let _ = event_tx.send(PlayerEvent::BufferingStart { track_id: track.id.clone() });
+                let _ = event_tx.send(PlayerEvent::BufferingStart {
+                    track_id: track.id.clone(),
+                });
 
                 // Start monitoring download events
                 let event_tx_clone = event_tx.clone();
@@ -551,7 +553,8 @@ impl PlayerEngine {
                         position_ms_clone,
                         volume_clone,
                         audio_sink_clone,
-                    ).await;
+                    )
+                    .await;
                 });
             }
         }
@@ -583,7 +586,11 @@ impl PlayerEngine {
                     let _ = event_tx.send(PlayerEvent::DownloadStarted { track_id });
                 }
                 DownloadEvent::Progress { track_id, progress } => {
-                    debug!("Download progress for {}: {:.1}%", track_id, progress * 100.0);
+                    debug!(
+                        "Download progress for {}: {:.1}%",
+                        track_id,
+                        progress * 100.0
+                    );
                     let _ = event_tx.send(PlayerEvent::DownloadProgress { track_id, progress });
                 }
                 DownloadEvent::StreamReady { track_id } => {
@@ -611,27 +618,39 @@ impl PlayerEngine {
                                         *state.write().await = PlayerState::Playing;
 
                                         // Send events
-                                        let _ = event_tx.send(PlayerEvent::TrackChanged(track.clone()));
-                                        let _ = event_tx.send(PlayerEvent::StateChanged(PlayerState::Playing));
-                                        let _ = event_tx.send(PlayerEvent::BufferingEnd { track_id: track.id.clone() });
+                                        let _ =
+                                            event_tx.send(PlayerEvent::TrackChanged(track.clone()));
+                                        let _ = event_tx
+                                            .send(PlayerEvent::StateChanged(PlayerState::Playing));
+                                        let _ = event_tx.send(PlayerEvent::BufferingEnd {
+                                            track_id: track.id.clone(),
+                                        });
 
                                         playback_started = true;
                                         info!("Streaming playback started for: {}", track.title);
                                     }
                                     Err(e) => {
                                         error!("Failed to start streaming playback: {}", e);
-                                        let _ = event_tx.send(PlayerEvent::Error(format!("Playback failed: {}", e)));
+                                        let _ = event_tx.send(PlayerEvent::Error(format!(
+                                            "Playback failed: {}",
+                                            e
+                                        )));
                                         *state.write().await = PlayerState::Stopped;
-                                        let _ = event_tx.send(PlayerEvent::StateChanged(PlayerState::Stopped));
+                                        let _ = event_tx
+                                            .send(PlayerEvent::StateChanged(PlayerState::Stopped));
                                         break;
                                     }
                                 }
                             }
                             Err(e) => {
                                 error!("Failed to create streaming decoder: {}", e);
-                                let _ = event_tx.send(PlayerEvent::Error(format!("Decoder creation failed: {}", e)));
+                                let _ = event_tx.send(PlayerEvent::Error(format!(
+                                    "Decoder creation failed: {}",
+                                    e
+                                )));
                                 *state.write().await = PlayerState::Stopped;
-                                let _ = event_tx.send(PlayerEvent::StateChanged(PlayerState::Stopped));
+                                let _ =
+                                    event_tx.send(PlayerEvent::StateChanged(PlayerState::Stopped));
                                 break;
                             }
                         }
@@ -644,7 +663,7 @@ impl PlayerEngine {
                 DownloadEvent::Failed { track_id, error } => {
                     error!("Download failed for {}: {}", track_id, error);
                     let _ = event_tx.send(PlayerEvent::DownloadFailed { track_id, error });
-                    
+
                     if !playback_started {
                         *state.write().await = PlayerState::Stopped;
                         let _ = event_tx.send(PlayerEvent::StateChanged(PlayerState::Stopped));
@@ -872,7 +891,7 @@ impl PlayerEngine {
                 // Update position continuously during playback
                 let current_position = audio_sink.read().await.get_position_ms();
                 *position_ms.write().await = current_position;
-                
+
                 let is_empty = audio_sink.read().await.is_empty();
 
                 if is_empty {

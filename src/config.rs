@@ -34,10 +34,10 @@ impl Default for Config {
             volume: 0.8,
             crossfade_ms: 0,
             // New cache settings with smart defaults
-            cache_max_age_days: 30,         // Keep tracks for 30 days max
-            cache_min_free_space_mb: 256,   // Keep 256MB free space
-            preload_next_tracks: 2,         // Preload next 2 tracks
-            stream_url_expire_hours: 24,    // Stream URLs expire after 24 hours
+            cache_max_age_days: 30,       // Keep tracks for 30 days max
+            cache_min_free_space_mb: 256, // Keep 256MB free space
+            preload_next_tracks: 2,       // Preload next 2 tracks
+            stream_url_expire_hours: 24,  // Stream URLs expire after 24 hours
         }
     }
 }

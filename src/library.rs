@@ -96,9 +96,9 @@ impl Library {
         let favorites_path = cache_dir.join("favorite_albums.json");
         let favorites = Self::load_favorites(&favorites_path).unwrap_or_default();
 
-        let mut library = Self { 
-            cache, 
-            metadata, 
+        let mut library = Self {
+            cache,
+            metadata,
             favorites,
             favorites_path,
         };
@@ -289,9 +289,9 @@ impl Library {
                 cover_path: None,
             });
     }
-    
+
     // Favorites management methods
-    
+
     fn load_favorites(path: &PathBuf) -> Option<FavoriteAlbums> {
         match fs::read_to_string(path) {
             Ok(content) => match serde_json::from_str(&content) {
@@ -304,53 +304,60 @@ impl Library {
             Err(_) => None, // File doesn't exist yet
         }
     }
-    
+
     fn save_favorites(&self) -> DabResult<()> {
         if let Some(parent) = self.favorites_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        
+
         let content = serde_json::to_string_pretty(&self.favorites)?;
         fs::write(&self.favorites_path, content)?;
-        
-        debug!("Saved {} favorite albums to {:?}", 
-               self.favorites.albums.len(), 
-               self.favorites_path);
+
+        debug!(
+            "Saved {} favorite albums to {:?}",
+            self.favorites.albums.len(),
+            self.favorites_path
+        );
         Ok(())
     }
-    
+
     pub fn add_favorite_album(&mut self, album: &DabAlbum) -> DabResult<bool> {
         let favorite_album = FavoriteAlbum::from(album);
         let album_key = format!("{}-{}", album.artist, album.title);
-        
+
         let is_new = !self.favorites.albums.contains_key(&album_key);
-        self.favorites.albums.insert(album_key.clone(), favorite_album);
-        
+        self.favorites
+            .albums
+            .insert(album_key.clone(), favorite_album);
+
         self.save_favorites()?;
-        
-        info!("Added album '{}' by '{}' to favorites", album.title, album.artist);
+
+        info!(
+            "Added album '{}' by '{}' to favorites",
+            album.title, album.artist
+        );
         Ok(is_new)
     }
-    
+
     pub fn remove_favorite_album(&mut self, artist: &str, title: &str) -> DabResult<bool> {
         let album_key = format!("{}-{}", artist, title);
         let removed = self.favorites.albums.remove(&album_key).is_some();
-        
+
         if removed {
             self.save_favorites()?;
             info!("Removed album '{}' by '{}' from favorites", title, artist);
         }
-        
+
         Ok(removed)
     }
-    
+
     pub fn get_favorite_albums(&self) -> Vec<&FavoriteAlbum> {
         let mut albums: Vec<&FavoriteAlbum> = self.favorites.albums.values().collect();
         // Sort by added date, most recent first
         albums.sort_by(|a, b| b.added_at.cmp(&a.added_at));
         albums
     }
-    
+
     pub fn is_favorite_album(&self, artist: &str, title: &str) -> bool {
         let album_key = format!("{}-{}", artist, title);
         self.favorites.albums.contains_key(&album_key)

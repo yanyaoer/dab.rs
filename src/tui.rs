@@ -213,7 +213,7 @@ impl TuiApp {
                 let track_text = self.format_current_track_info();
                 let app_title = "Dab Music Player";
                 let title_width = app_title.len();
-                
+
                 // Use a reasonable default width - will be calculated dynamically in render_header
                 let available_width: usize = 80; // This will be calculated dynamically in render_header
                 let remaining_width = available_width.saturating_sub(title_width + 3); // +3 for " | " separator
@@ -324,17 +324,17 @@ impl TuiApp {
     fn render_header(&self, f: &mut Frame, area: Rect) {
         // Calculate available width for text (minus borders and padding)
         let available_width = (area.width.saturating_sub(4)) as usize; // 2 for borders, 2 for padding
-        
+
         // Fixed left title
         let app_title = "Dab Music Player";
         let title_width = app_title.len();
-        
+
         // Calculate remaining width for track info
         let remaining_width = available_width.saturating_sub(title_width + 3); // +3 for " | " separator
-        
+
         let display_text = if let Some(_) = &self.current_track {
             let track_info = self.format_current_track_info();
-            
+
             if track_info.len() <= remaining_width {
                 // Track info fits, no scrolling needed
                 format!("{} | {}", app_title, track_info)
@@ -388,17 +388,20 @@ impl TuiApp {
 
     fn render_library(&mut self, f: &mut Frame, area: Rect) {
         let favorite_albums = self.library.get_favorite_albums();
-        
+
         let items: Vec<ListItem> = favorite_albums
             .iter()
             .map(|album| {
                 ListItem::new(Line::from(vec![
                     Span::styled(
-                        format!("{} - {}", album.artist, album.title),  
+                        format!("{} - {}", album.artist, album.title),
                         Style::default().fg(Color::White),
                     ),
                     Span::styled(
-                        format!(" ({})", album.release_date.as_deref().unwrap_or("Unknown year")),
+                        format!(
+                            " ({})",
+                            album.release_date.as_deref().unwrap_or("Unknown year")
+                        ),
                         Style::default().fg(Color::DarkGray),
                     ),
                 ]))
@@ -406,7 +409,11 @@ impl TuiApp {
             .collect();
 
         let list = List::new(items)
-            .block(Block::default().title("Favorite Albums").borders(Borders::ALL))
+            .block(
+                Block::default()
+                    .title("Favorite Albums")
+                    .borders(Borders::ALL),
+            )
             .highlight_style(Style::default().bg(Color::DarkGray))
             .highlight_symbol("► ");
 
@@ -884,11 +891,15 @@ impl TuiApp {
                                             self.switch_view(View::ArtistDiscography).await;
                                         }
                                         Err(e) => {
-                                            self.status_message = Some(format!("Failed to load artist discography: {}", e));
+                                            self.status_message = Some(format!(
+                                                "Failed to load artist discography: {}",
+                                                e
+                                            ));
                                         }
                                     }
                                 } else {
-                                    self.status_message = Some("Artist information not available".to_string());
+                                    self.status_message =
+                                        Some("Artist information not available".to_string());
                                 }
                             }
                         }
@@ -947,7 +958,8 @@ impl TuiApp {
                                     self.switch_view(View::DetailedAlbum).await;
                                 }
                                 Err(e) => {
-                                    self.status_message = Some(format!("Failed to load album: {}", e));
+                                    self.status_message =
+                                        Some(format!("Failed to load album: {}", e));
                                 }
                             }
                         }
@@ -1051,8 +1063,14 @@ impl TuiApp {
                                                     id: dab_track.id.clone(),
                                                     title: dab_track.title.clone(),
                                                     artist: dab_track.artist.clone(),
-                                                    album: dab_track.album_title.clone().unwrap_or_else(|| detailed_album.title.clone()),
-                                                    duration_ms: dab_track.duration.unwrap_or(0) * 1000,
+                                                    album: dab_track
+                                                        .album_title
+                                                        .clone()
+                                                        .unwrap_or_else(|| {
+                                                            detailed_album.title.clone()
+                                                        }),
+                                                    duration_ms: dab_track.duration.unwrap_or(0)
+                                                        * 1000,
                                                     local_path: None,
                                                     cover_url: dab_track.album_cover.clone(),
                                                     track_id: Some(dab_track.id.clone()),
@@ -1060,18 +1078,22 @@ impl TuiApp {
                                                     album_id: dab_track.album_id.clone(),
                                                 })
                                                 .collect();
-                                            
-                                            self.player.clear_and_play_tracks(player_tracks).await?;
+
+                                            self.player
+                                                .clear_and_play_tracks(player_tracks)
+                                                .await?;
                                             self.status_message = Some(format!(
                                                 "Playing all tracks from '{}'",
                                                 detailed_album.title
                                             ));
                                         } else {
-                                            self.status_message = Some("No tracks found in album".to_string());
+                                            self.status_message =
+                                                Some("No tracks found in album".to_string());
                                         }
                                     }
                                     Err(e) => {
-                                        self.status_message = Some(format!("Failed to load album details: {}", e));
+                                        self.status_message =
+                                            Some(format!("Failed to load album details: {}", e));
                                     }
                                 }
                             }
@@ -1162,7 +1184,7 @@ impl TuiApp {
                     self.status_message = Some("Queue cleared".to_string());
                 }
             }
-            
+
             KeyCode::Char('m') => {
                 match self.current_view {
                     View::DetailedAlbum => {
@@ -1182,7 +1204,8 @@ impl TuiApp {
                                     }
                                 }
                                 Err(e) => {
-                                    self.status_message = Some(format!("Failed to add to library: {}", e));
+                                    self.status_message =
+                                        Some(format!("Failed to add to library: {}", e));
                                 }
                             }
                         }
@@ -1191,7 +1214,9 @@ impl TuiApp {
                         if let Some(selected_index) = self.list_state.selected() {
                             if let Some(track) = self.search_results_raw.get(selected_index) {
                                 // Convert search result track to a DabAlbum for adding to favorites
-                                if let (Some(album_title), Some(album_id)) = (&track.album_title, &track.album_id) {
+                                if let (Some(album_title), Some(album_id)) =
+                                    (&track.album_title, &track.album_id)
+                                {
                                     let album = crate::search::DabAlbum {
                                         id: album_id.clone(),
                                         title: album_title.clone(),
@@ -1214,7 +1239,7 @@ impl TuiApp {
                                         popularity: None,
                                         audio_quality: track.audio_quality.clone(),
                                     };
-                                    
+
                                     match self.library.add_favorite_album(&album) {
                                         Ok(is_new) => {
                                             if is_new {
@@ -1230,17 +1255,20 @@ impl TuiApp {
                                             }
                                         }
                                         Err(e) => {
-                                            self.status_message = Some(format!("Failed to add to library: {}", e));
+                                            self.status_message =
+                                                Some(format!("Failed to add to library: {}", e));
                                         }
                                     }
                                 } else {
-                                    self.status_message = Some("Track doesn't have album information".to_string());
+                                    self.status_message =
+                                        Some("Track doesn't have album information".to_string());
                                 }
                             }
                         }
                     }
                     _ => {
-                        self.status_message = Some("'m' key only works in Album Detail or Search view".to_string());
+                        self.status_message =
+                            Some("'m' key only works in Album Detail or Search view".to_string());
                     }
                 }
             }

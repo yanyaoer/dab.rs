@@ -478,13 +478,13 @@ impl Queue {
     pub async fn peek_next_n(&self, n: usize) -> Result<Vec<Track>, String> {
         let tracks = self.tracks.read().await;
         let current_index = self.current_index.read().await;
-        
+
         let mut result = Vec::new();
-        
+
         if let Some(current) = *current_index {
             // Start from the track after current
             let start_index = current + 1;
-            
+
             for i in 0..n {
                 let track_index = start_index + i;
                 if track_index < tracks.len() {
@@ -514,7 +514,7 @@ impl Queue {
                 }
             }
         }
-        
+
         Ok(result)
     }
 }

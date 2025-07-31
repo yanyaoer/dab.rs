@@ -138,7 +138,7 @@ impl AudioSink {
         let start_time_guard = self.start_time.lock().unwrap();
         let paused_duration_guard = self.paused_duration.lock().unwrap();
         let last_pause_time_guard = self.last_pause_time.lock().unwrap();
-        
+
         if let Some(start_time) = *start_time_guard {
             let total_elapsed = start_time.elapsed();
             let current_paused_duration = if let Some(pause_time) = *last_pause_time_guard {
@@ -148,7 +148,7 @@ impl AudioSink {
                 // Not currently paused
                 *paused_duration_guard
             };
-            
+
             // Subtract paused time from total elapsed time
             let playback_position = total_elapsed.saturating_sub(current_paused_duration);
             playback_position.as_millis() as u32
