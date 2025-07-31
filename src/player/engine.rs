@@ -4,7 +4,8 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, RwLock};
 
 use super::decoder::AudioDecoder;
-use super::loader::AudioLoader;
+use super::download_manager::DownloadEvent;
+use super::loader::{AudioLoader, LoadResult};
 use super::queue::StreamUrl;
 use super::sink::AudioSink;
 use super::{PlayerCommand, PlayerEvent, PlayerState, PlayerStatus, Queue, RepeatMode, Track};
@@ -28,7 +29,7 @@ impl PlayerEngine {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
 
         let cache = Cache::new().await?;
-        let loader = AudioLoader::new(cache);
+        let loader = AudioLoader::new(cache).await?;
         let queue = Arc::new(Queue::new());
         let audio_sink = Arc::new(RwLock::new(AudioSink::new()?));
 
@@ -465,37 +466,208 @@ impl PlayerEngine {
         // Get stream URL for the track
         let stream_url = Self::get_stream_url(track, search_api, stream_url_cache).await?;
 
-        // Create a track with the stream URL for loading
-        let mut track_with_url = track.clone();
-        // Set the local_path to the stream URL so the loader can access it
-        track_with_url.local_path = Some(stream_url.clone());
+        // Try streaming load first (preferred for online tracks)
+        let load_result = if track.is_local() {
+            // For local tracks, use traditional seekable loading
+            match loader.load_track_seekable(track).await {
+                Ok(seekable) => LoadResult::Seekable(seekable),
+                Err(e) => {
+                    error!("Failed to load local track: {}", e);
+                    return Err(e);
+                }
+            }
+        } else {
+            // For online tracks, use streaming loading
+            match loader.load_track_streaming(track, &stream_url).await {
+                Ok(result) => result,
+                Err(e) => {
+                    warn!("Streaming load failed, falling back to traditional: {}", e);
+                    // Fallback to traditional loading
+                    let mut track_with_url = track.clone();
+                    track_with_url.local_path = Some(stream_url.clone());
+                    match loader.load_track_seekable(&track_with_url).await {
+                        Ok(seekable) => LoadResult::Seekable(seekable),
+                        Err(e) => {
+                            error!("Both streaming and traditional loading failed: {}", e);
+                            return Err(e);
+                        }
+                    }
+                }
+            }
+        };
 
-        // Load the audio file using the track with stream URL
-        let audio_source = loader.load_track_seekable(&track_with_url).await?;
+        // Handle the different load results
+        match load_result {
+            LoadResult::Seekable(audio_source) => {
+                // Traditional seekable playback
+                let decoder = AudioDecoder::from_seekable(audio_source)?;
+                
+                // Stop any current playback
+                audio_sink.read().await.stop()?;
 
-        // Create decoder
-        let decoder = AudioDecoder::from_seekable(audio_source)?;
+                // Get current volume
+                let volume_value = *volume.read().await;
 
-        // Stop any current playback
-        audio_sink.read().await.stop()?;
+                // Start playback
+                audio_sink.write().await.play(decoder, volume_value)?;
 
-        // Get current volume from stored volume (not player state)
-        let volume_value = *volume.read().await;
+                // Update current track
+                *current_track.write().await = Some(track.clone());
+                *position_ms.write().await = 0;
 
-        // Start playback
-        audio_sink.write().await.play(decoder, volume_value)?;
+                let _ = event_tx.send(PlayerEvent::TrackChanged(track.clone()));
 
-        // Update current track with original track metadata (not the URL-based track)
-        *current_track.write().await = Some(track.clone());
-        *position_ms.write().await = 0;
+                // Start playing
+                *state.write().await = PlayerState::Playing;
+                let _ = event_tx.send(PlayerEvent::StateChanged(PlayerState::Playing));
+            }
+            LoadResult::Streaming { source, events } => {
+                // Streaming playback
+                info!("Starting streaming playback for: {}", track.title);
+                
+                // Set buffering state
+                *state.write().await = PlayerState::Buffering;
+                let _ = event_tx.send(PlayerEvent::StateChanged(PlayerState::Buffering));
+                let _ = event_tx.send(PlayerEvent::BufferingStart { track_id: track.id.clone() });
 
-        let _ = event_tx.send(PlayerEvent::TrackChanged(track.clone()));
+                // Start monitoring download events
+                let event_tx_clone = event_tx.clone();
+                let state_clone = state.clone();
+                let current_track_clone = current_track.clone();
+                let position_ms_clone = position_ms.clone();
+                let volume_clone = volume.clone();
+                let audio_sink_clone = audio_sink.clone();
+                let source_clone = source.clone();
+                let track_clone = track.clone();
 
-        // Start playing
-        *state.write().await = PlayerState::Playing;
-        let _ = event_tx.send(PlayerEvent::StateChanged(PlayerState::Playing));
+                tokio::spawn(async move {
+                    Self::handle_streaming_playback(
+                        track_clone,
+                        source_clone,
+                        events,
+                        event_tx_clone,
+                        state_clone,
+                        current_track_clone,
+                        position_ms_clone,
+                        volume_clone,
+                        audio_sink_clone,
+                    ).await;
+                });
+            }
+        }
 
         Ok(())
+    }
+
+    /// Handle streaming playback setup and monitoring
+    async fn handle_streaming_playback(
+        track: Track,
+        streaming_source: Arc<super::streaming::StreamingAudioSource>,
+        mut download_events: mpsc::UnboundedReceiver<DownloadEvent>,
+        event_tx: mpsc::UnboundedSender<PlayerEvent>,
+        state: Arc<RwLock<PlayerState>>,
+        current_track: Arc<RwLock<Option<Track>>>,
+        position_ms: Arc<RwLock<u32>>,
+        volume: Arc<RwLock<f32>>,
+        audio_sink: Arc<RwLock<AudioSink>>,
+    ) {
+        info!("Handling streaming playback for: {}", track.title);
+
+        let mut playback_started = false;
+
+        // Monitor download events and start playback when ready
+        while let Some(event) = download_events.recv().await {
+            match event {
+                DownloadEvent::Started { track_id } => {
+                    debug!("Download started for: {}", track_id);
+                    let _ = event_tx.send(PlayerEvent::DownloadStarted { track_id });
+                }
+                DownloadEvent::Progress { track_id, progress } => {
+                    debug!("Download progress for {}: {:.1}%", track_id, progress * 100.0);
+                    let _ = event_tx.send(PlayerEvent::DownloadProgress { track_id, progress });
+                }
+                DownloadEvent::StreamReady { track_id } => {
+                    info!("Stream ready for: {}", track_id);
+                    let _ = event_tx.send(PlayerEvent::StreamReady { track_id });
+
+                    if !playback_started {
+                        // Start playback now that we have enough buffer
+                        match AudioDecoder::from_streaming(streaming_source.clone()) {
+                            Ok(decoder) => {
+                                // Stop any current playback
+                                if let Err(e) = audio_sink.read().await.stop() {
+                                    warn!("Failed to stop current playback: {}", e);
+                                }
+
+                                // Get current volume
+                                let volume_value = *volume.read().await;
+
+                                // Start streaming playback
+                                match audio_sink.write().await.play(decoder, volume_value) {
+                                    Ok(()) => {
+                                        // Update state
+                                        *current_track.write().await = Some(track.clone());
+                                        *position_ms.write().await = 0;
+                                        *state.write().await = PlayerState::Playing;
+
+                                        // Send events
+                                        let _ = event_tx.send(PlayerEvent::TrackChanged(track.clone()));
+                                        let _ = event_tx.send(PlayerEvent::StateChanged(PlayerState::Playing));
+                                        let _ = event_tx.send(PlayerEvent::BufferingEnd { track_id: track.id.clone() });
+
+                                        playback_started = true;
+                                        info!("Streaming playback started for: {}", track.title);
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to start streaming playback: {}", e);
+                                        let _ = event_tx.send(PlayerEvent::Error(format!("Playback failed: {}", e)));
+                                        *state.write().await = PlayerState::Stopped;
+                                        let _ = event_tx.send(PlayerEvent::StateChanged(PlayerState::Stopped));
+                                        break;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!("Failed to create streaming decoder: {}", e);
+                                let _ = event_tx.send(PlayerEvent::Error(format!("Decoder creation failed: {}", e)));
+                                *state.write().await = PlayerState::Stopped;
+                                let _ = event_tx.send(PlayerEvent::StateChanged(PlayerState::Stopped));
+                                break;
+                            }
+                        }
+                    }
+                }
+                DownloadEvent::Completed { track_id } => {
+                    info!("Download completed for: {}", track_id);
+                    let _ = event_tx.send(PlayerEvent::DownloadCompleted { track_id });
+                }
+                DownloadEvent::Failed { track_id, error } => {
+                    error!("Download failed for {}: {}", track_id, error);
+                    let _ = event_tx.send(PlayerEvent::DownloadFailed { track_id, error });
+                    
+                    if !playback_started {
+                        *state.write().await = PlayerState::Stopped;
+                        let _ = event_tx.send(PlayerEvent::StateChanged(PlayerState::Stopped));
+                    }
+                    break;
+                }
+                DownloadEvent::BufferingStart { track_id } => {
+                    debug!("Buffering started for: {}", track_id);
+                    let _ = event_tx.send(PlayerEvent::BufferingStart { track_id });
+                }
+                DownloadEvent::BufferingEnd { track_id } => {
+                    debug!("Buffering ended for: {}", track_id);
+                    let _ = event_tx.send(PlayerEvent::BufferingEnd { track_id });
+                }
+            }
+        }
+
+        // If we never started playback, set error state
+        if !playback_started {
+            warn!("Streaming playback never started for: {}", track.title);
+            *state.write().await = PlayerState::Stopped;
+            let _ = event_tx.send(PlayerEvent::StateChanged(PlayerState::Stopped));
+        }
     }
 
     pub async fn load_and_play(&mut self, track_or_url: &str) -> DabResult<()> {

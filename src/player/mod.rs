@@ -2,10 +2,13 @@ use serde::{Deserialize, Serialize};
 
 mod audio_source;
 mod decoder;
+mod download_manager;
 mod engine;
 mod loader;
+mod preloader;
 mod queue;
 mod sink;
+mod streaming;
 
 pub use engine::PlayerEngine;
 pub use queue::{Queue, QueueCommand, QueueEvent, RepeatMode, Track};
@@ -62,4 +65,12 @@ pub enum PlayerEvent {
     RepeatModeChanged(RepeatMode),
     TrackEnded,
     Error(String),
+    // New streaming-related events
+    DownloadProgress { track_id: String, progress: f32 },
+    StreamReady { track_id: String },
+    BufferingStart { track_id: String },
+    BufferingEnd { track_id: String },
+    DownloadStarted { track_id: String },
+    DownloadCompleted { track_id: String },
+    DownloadFailed { track_id: String, error: String },
 }

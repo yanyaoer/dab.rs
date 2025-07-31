@@ -473,4 +473,48 @@ impl Queue {
         let _ = self.send_command(QueueCommand::GetCurrentIndex(tx)).await;
         rx.await.unwrap_or(None)
     }
+
+    /// Peek at the next N tracks without advancing the queue
+    pub async fn peek_next_n(&self, n: usize) -> Result<Vec<Track>, String> {
+        let tracks = self.tracks.read().await;
+        let current_index = self.current_index.read().await;
+        
+        let mut result = Vec::new();
+        
+        if let Some(current) = *current_index {
+            // Start from the track after current
+            let start_index = current + 1;
+            
+            for i in 0..n {
+                let track_index = start_index + i;
+                if track_index < tracks.len() {
+                    if let Some(track) = tracks.get(track_index) {
+                        result.push(track.clone());
+                    }
+                } else {
+                    // Handle repeat mode
+                    let repeat_mode = *self.repeat.read().await;
+                    match repeat_mode {
+                        RepeatMode::All => {
+                            // Wrap around to beginning
+                            let wrapped_index = track_index % tracks.len();
+                            if let Some(track) = tracks.get(wrapped_index) {
+                                result.push(track.clone());
+                            }
+                        }
+                        _ => break, // No more tracks available
+                    }
+                }
+            }
+        } else if !tracks.is_empty() {
+            // No current track, peek from the beginning
+            for i in 0..n.min(tracks.len()) {
+                if let Some(track) = tracks.get(i) {
+                    result.push(track.clone());
+                }
+            }
+        }
+        
+        Ok(result)
+    }
 }

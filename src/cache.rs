@@ -25,6 +25,15 @@ pub struct Id3Metadata {
     cover_art_hash: Option<String>,
 }
 
+/// Cache status for tracks
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum CacheStatus {
+    NotCached,
+    PartiallyDownloaded { progress: f32 }, // 0.0-1.0
+    FullyDownloaded,
+    StreamReady, // Has enough buffer to start playback
+}
+
 #[derive(Debug, Clone)]
 pub struct Cache {
     cache_dir: PathBuf,
@@ -48,6 +57,8 @@ struct CacheEntry {
     url: String,
     id3_metadata: Option<Id3Metadata>,
     unique_id: String,
+    download_status: CacheStatus,
+    expected_size: Option<u64>, // For partial downloads
 }
 
 impl Cache {
@@ -181,6 +192,8 @@ impl Cache {
             url: original_url.to_string(),
             id3_metadata,
             unique_id,
+            download_status: CacheStatus::FullyDownloaded,
+            expected_size: Some(size_bytes),
         };
 
         self.metadata.entries.insert(track_id.to_string(), entry);
@@ -634,6 +647,201 @@ impl Cache {
 
         let result = hasher.finalize();
         format!("{:x}", result)
+    }
+
+    /// Get cache status for a track
+    pub async fn get_cache_status(&self, track_id: &str) -> CacheStatus {
+        if let Some(entry) = self.metadata.entries.get(track_id) {
+            let path = PathBuf::from(&entry.file_path);
+            if path.exists() {
+                entry.download_status.clone()
+            } else {
+                CacheStatus::NotCached
+            }
+        } else {
+            CacheStatus::NotCached
+        }
+    }
+
+    /// Update download status for a track
+    pub async fn update_download_status(&mut self, track_id: &str, status: CacheStatus) -> DabResult<()> {
+        if let Some(entry) = self.metadata.entries.get_mut(track_id) {
+            entry.download_status = status;
+            self.save_metadata().await?;
+            Ok(())
+        } else {
+            Err(DabError::Cache(format!(
+                "Track {} not found in cache",
+                track_id
+            )))
+        }
+    }
+
+    /// Update download progress for a track
+    pub async fn update_download_progress(&mut self, track_id: &str, progress: f32) -> DabResult<()> {
+        if let Some(entry) = self.metadata.entries.get_mut(track_id) {
+            entry.download_status = if progress >= 1.0 {
+                CacheStatus::FullyDownloaded
+            } else if progress >= 0.1 { // 10% threshold for stream ready
+                CacheStatus::StreamReady
+            } else {
+                CacheStatus::PartiallyDownloaded { progress }
+            };
+            self.save_metadata().await?;
+            Ok(())
+        } else {
+            // Create a new entry for partial download
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+
+            let entry = CacheEntry {
+                track_id: track_id.to_string(),
+                file_path: String::new(), // Will be set when download completes
+                size_bytes: 0,
+                created_at: now,
+                last_accessed: now,
+                url: String::new(),
+                id3_metadata: None,
+                unique_id: String::new(),
+                download_status: CacheStatus::PartiallyDownloaded { progress },
+                expected_size: None,
+            };
+
+            self.metadata.entries.insert(track_id.to_string(), entry);
+            self.save_metadata().await?;
+            Ok(())
+        }
+    }
+
+    /// Check if track is ready for streaming (has enough buffer)
+    pub async fn is_stream_ready(&self, track_id: &str, min_buffer_mb: u32) -> bool {
+        if let Some(entry) = self.metadata.entries.get(track_id) {
+            match &entry.download_status {
+                CacheStatus::FullyDownloaded => true,
+                CacheStatus::StreamReady => true,
+                CacheStatus::PartiallyDownloaded { progress } => {
+                    if let Some(expected_size) = entry.expected_size {
+                        let downloaded_bytes = (expected_size as f32 * progress) as u64;
+                        let min_buffer_bytes = (min_buffer_mb as u64) * 1024 * 1024;
+                        downloaded_bytes >= min_buffer_bytes
+                    } else {
+                        *progress >= 0.1 // Default 10% threshold
+                    }
+                }
+                CacheStatus::NotCached => false,
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Get download progress for a track (0.0 to 1.0)
+    pub async fn get_download_progress(&self, track_id: &str) -> Option<f32> {
+        if let Some(entry) = self.metadata.entries.get(track_id) {
+            match &entry.download_status {
+                CacheStatus::FullyDownloaded => Some(1.0),
+                CacheStatus::StreamReady => Some(0.5), // Estimate
+                CacheStatus::PartiallyDownloaded { progress } => Some(*progress),
+                CacheStatus::NotCached => Some(0.0),
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Set expected size for a track (used when starting downloads)
+    pub async fn set_expected_size(&mut self, track_id: &str, expected_size: u64) -> DabResult<()> {
+        if let Some(entry) = self.metadata.entries.get_mut(track_id) {
+            entry.expected_size = Some(expected_size);
+            self.save_metadata().await?;
+        }
+        Ok(())
+    }
+
+    /// Start partial download entry
+    pub async fn start_partial_download(&mut self, track_id: &str, url: &str, expected_size: Option<u64>) -> DabResult<()> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let entry = CacheEntry {
+            track_id: track_id.to_string(),
+            file_path: String::new(), // Will be set when download completes
+            size_bytes: 0,
+            created_at: now,
+            last_accessed: now,
+            url: url.to_string(),
+            id3_metadata: None,
+            unique_id: String::new(),
+            download_status: CacheStatus::PartiallyDownloaded { progress: 0.0 },
+            expected_size,
+        };
+
+        self.metadata.entries.insert(track_id.to_string(), entry);
+        self.save_metadata().await?;
+        info!("Started partial download for track: {}", track_id);
+        Ok(())
+    }
+
+    /// Complete partial download (convert to full cache entry)
+    pub async fn complete_partial_download(
+        &mut self,
+        track_id: &str,
+        file_path: &Path,
+        actual_size: u64,
+    ) -> DabResult<PathBuf> {
+        // Get entry URL before mutation
+        let entry_url = if let Some(entry) = self.metadata.entries.get(track_id) {
+            entry.url.clone()
+        } else {
+            return Err(DabError::Cache(format!(
+                "Partial download entry not found for track: {}",
+                track_id
+            )));
+        };
+
+        // Move file to proper cache location
+        let file_extension = file_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("mp3");
+
+        let cache_filename = format!("{}.{}", track_id, file_extension);
+        let cache_path = self.cache_dir.join(&cache_filename);
+
+        // Copy file to cache
+        fs::copy(file_path, &cache_path).await?;
+
+        // Extract ID3 metadata
+        let id3_metadata = self.extract_id3_metadata(&cache_path).await.unwrap_or(None);
+        
+        // Generate unique ID
+        let unique_id = Self::generate_unique_id_static(track_id, &id3_metadata, &entry_url).await;
+
+        // Now update the entry
+        if let Some(entry) = self.metadata.entries.get_mut(track_id) {
+            entry.file_path = cache_path.to_string_lossy().to_string();
+            entry.size_bytes = actual_size;
+            entry.download_status = CacheStatus::FullyDownloaded;
+            entry.last_accessed = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            entry.id3_metadata = id3_metadata;
+            entry.unique_id = unique_id;
+
+            self.save_metadata().await?;
+            info!("Completed partial download for track: {} -> {}", track_id, cache_path.display());
+            Ok(cache_path)
+        } else {
+            Err(DabError::Cache(format!(
+                "Partial download entry not found for track: {}",
+                track_id
+            )))
+        }
     }
 }
 
