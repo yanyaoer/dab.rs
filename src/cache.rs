@@ -39,6 +39,11 @@ pub struct Cache {
     cache_dir: PathBuf,
     max_size_bytes: u64,
     metadata: CacheMetadata,
+    // New cache management settings
+    max_age_days: u32,          // Maximum age for low priority tracks
+    min_free_space_mb: u64,     // Minimum free space to maintain
+    preload_next_tracks: u32,   // Number of next tracks to preload
+    stream_url_expire_hours: u32, // Hours after which stream URLs expire
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +64,20 @@ struct CacheEntry {
     unique_id: String,
     download_status: CacheStatus,
     expected_size: Option<u64>, // For partial downloads
+    // New fields for improved cache management
+    access_count: u64,
+    priority: CachePriority,
+    last_played: Option<u64>,
+    expires_at: Option<u64>, // For URL-based tracks that may expire
+}
+
+/// Priority levels for cache entries
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CachePriority {
+    Low,        // Rarely accessed tracks
+    Normal,     // Default priority
+    High,       // Frequently played tracks
+    Pinned,     // Never delete (user favorites, current queue)
 }
 
 impl Cache {
@@ -84,14 +103,19 @@ impl Cache {
             CacheMetadata::new()
         };
 
-        let cache = Self {
+        let mut cache = Self {
             cache_dir,
             max_size_bytes,
             metadata,
+            max_age_days: config.cache_max_age_days,
+            min_free_space_mb: config.cache_min_free_space_mb,
+            preload_next_tracks: config.preload_next_tracks,
+            stream_url_expire_hours: config.stream_url_expire_hours,
         };
 
-        // Clean up any orphaned files
+        // Clean up any orphaned files and expired entries
         cache.cleanup().await?;
+        cache.cleanup_expired().await?;
 
         info!("Cache initialized at: {}", cache.cache_dir.display());
         Ok(cache)
@@ -123,12 +147,20 @@ impl Cache {
         if let Some(entry) = self.metadata.entries.get_mut(track_id) {
             let path = PathBuf::from(&entry.file_path);
             if path.exists() {
-                // Update last accessed time
+                // Update access statistics
                 entry.last_accessed = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
                     .as_secs();
-                // Save metadata with updated access time
+                entry.access_count += 1;
+                
+                // Auto-promote frequently accessed tracks
+                if entry.access_count >= 10 && entry.priority == CachePriority::Normal {
+                    entry.priority = CachePriority::High;
+                    info!("Promoted track {} to high priority (access count: {})", track_id, entry.access_count);
+                }
+                
+                // Save metadata with updated access stats
                 let _ = self.save_metadata().await;
                 Ok(Some(path))
             } else {
@@ -194,6 +226,15 @@ impl Cache {
             unique_id,
             download_status: CacheStatus::FullyDownloaded,
             expected_size: Some(size_bytes),
+            // Initialize new fields
+            access_count: 1, // First access when storing
+            priority: CachePriority::Normal,
+            last_played: None,
+            expires_at: if original_url.starts_with("http") {
+                Some(now + (self.stream_url_expire_hours as u64 * 3600))
+            } else {
+                None // Local files don't expire
+            },
         };
 
         self.metadata.entries.insert(track_id.to_string(), entry);
@@ -264,32 +305,30 @@ impl Cache {
 
     async fn enforce_size_limit(&mut self) -> DabResult<()> {
         let total_size = self.get_cache_size();
+        let target_size = self.max_size_bytes - (self.min_free_space_mb * 1024 * 1024);
 
-        if total_size <= self.max_size_bytes {
+        if total_size <= target_size {
             return Ok(());
         }
 
         info!(
-            "Cache size ({} MB) exceeds limit ({} MB), cleaning up old files",
-            total_size / (1024 * 1024),
-            self.max_size_bytes / (1024 * 1024)
+            "Cache size ({} MB) exceeds limit, cleaning up with smart strategy",
+            total_size / (1024 * 1024)
         );
 
-        // Sort entries by last accessed time (oldest first)
-        let mut entries: Vec<_> = self
-            .metadata
-            .entries
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        entries.sort_by_key(|(_, entry)| entry.last_accessed);
-
+        // Multi-tier cleanup strategy
+        let candidates = self.get_cleanup_candidates().await;
         let mut current_size = total_size;
-        let target_size = (self.max_size_bytes as f64 * 0.8) as u64; // Clean up to 80% of limit
+        let final_target_size = (target_size as f64 * 0.8) as u64; // Clean up to 80% of target
 
-        for (track_id, entry) in entries {
-            if current_size <= target_size {
+        for (track_id, entry) in candidates {
+            if current_size <= final_target_size {
                 break;
+            }
+
+            // Never delete pinned tracks
+            if entry.priority == CachePriority::Pinned {
+                continue;
             }
 
             current_size -= entry.size_bytes;
@@ -297,17 +336,75 @@ impl Cache {
 
             if path.exists() {
                 fs::remove_file(&path).await?;
-                debug!("Removed old cached file: {}", path.display());
+                debug!("Removed cached file: {} (priority: {:?}, access_count: {})", 
+                       path.display(), entry.priority, entry.access_count);
             }
 
             self.metadata.entries.remove(&track_id);
         }
 
         info!(
-            "Cache cleanup completed, new size: {} MB",
-            current_size / (1024 * 1024)
+            "Smart cache cleanup completed, new size: {} MB, freed: {} MB",
+            current_size / (1024 * 1024),
+            (total_size - current_size) / (1024 * 1024)
         );
         Ok(())
+    }
+
+    /// Get cleanup candidates sorted by priority (least important first)
+    async fn get_cleanup_candidates(&self) -> Vec<(String, CacheEntry)> {
+        let mut candidates: Vec<_> = self
+            .metadata
+            .entries
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        // Sort by cleanup priority (complex scoring system)
+        candidates.sort_by(|a, b| {
+            let score_a = self.calculate_cleanup_score(&a.1);
+            let score_b = self.calculate_cleanup_score(&b.1);
+            score_a.partial_cmp(&score_b).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        candidates
+    }
+
+    /// Calculate cleanup score (lower score = higher cleanup priority)
+    fn calculate_cleanup_score(&self, entry: &CacheEntry) -> f64 {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Base score by priority
+        let mut score = match entry.priority {
+            CachePriority::Pinned => 1000.0,  // Never delete
+            CachePriority::High => 100.0,
+            CachePriority::Normal => 50.0,
+            CachePriority::Low => 10.0,
+        };
+
+        // Factor in access frequency (higher = better score)
+        score += (entry.access_count as f64).log10() * 10.0;
+
+        // Factor in recency of access (more recent = better score)
+        let days_since_access = (now - entry.last_accessed) as f64 / (24.0 * 3600.0);
+        score -= days_since_access * 2.0;
+
+        // Factor in last played (more recent = better score)
+        if let Some(last_played) = entry.last_played {
+            let days_since_played = (now - last_played) as f64 / (24.0 * 3600.0);
+            score -= days_since_played;
+        }
+
+        // Penalty for very old files
+        let days_since_created = (now - entry.created_at) as f64 / (24.0 * 3600.0);
+        if days_since_created > self.max_age_days as f64 && entry.priority == CachePriority::Low {
+            score -= 50.0; // Heavy penalty for old low-priority files
+        }
+
+        score.max(0.0)
     }
 
     async fn cleanup(&self) -> DabResult<()> {
@@ -342,10 +439,193 @@ impl Cache {
         Ok(())
     }
 
+    /// Clean up expired cache entries (for stream URLs)
+    async fn cleanup_expired(&mut self) -> DabResult<()> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let mut expired_tracks = Vec::new();
+
+        for (track_id, entry) in &self.metadata.entries {
+            if let Some(expires_at) = entry.expires_at {
+                if now > expires_at {
+                    expired_tracks.push(track_id.clone());
+                }
+            }
+        }
+
+        if !expired_tracks.is_empty() {
+            info!("Cleaning up {} expired cache entries", expired_tracks.len());
+            for track_id in expired_tracks {
+                if let Some(entry) = self.metadata.entries.remove(&track_id) {
+                    let path = PathBuf::from(&entry.file_path);
+                    if path.exists() {
+                        if let Err(e) = fs::remove_file(&path).await {
+                            warn!("Failed to remove expired cached file {}: {}", path.display(), e);
+                        } else {
+                            debug!("Removed expired cached file: {}", path.display());
+                        }
+                    }
+                }
+            }
+            self.save_metadata().await?;
+        }
+
+        Ok(())
+    }
+
     async fn save_metadata(&self) -> DabResult<()> {
         let metadata_path = self.cache_dir.join("metadata.json");
         let content = serde_json::to_string_pretty(&self.metadata)?;
         fs::write(&metadata_path, content).await?;
+        Ok(())
+    }
+
+    /// Mark track as played (updates last_played timestamp)
+    pub async fn mark_track_played(&mut self, track_id: &str) -> DabResult<()> {
+        if let Some(entry) = self.metadata.entries.get_mut(track_id) {
+            entry.last_played = Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+            );
+            self.save_metadata().await?;
+        }
+        Ok(())
+    }
+
+    /// Set cache priority for a track
+    pub async fn set_track_priority(&mut self, track_id: &str, priority: CachePriority) -> DabResult<()> {
+        if let Some(entry) = self.metadata.entries.get_mut(track_id) {
+            let old_priority = entry.priority.clone();
+            entry.priority = priority;
+            info!("Changed track {} priority from {:?} to {:?}", track_id, old_priority, entry.priority);
+            self.save_metadata().await?;
+        }
+        Ok(())
+    }
+
+    /// Pin tracks to prevent deletion (e.g., current queue, favorites)
+    pub async fn pin_tracks(&mut self, track_ids: &[String]) -> DabResult<()> {
+        for track_id in track_ids {
+            if let Some(entry) = self.metadata.entries.get_mut(track_id) {
+                entry.priority = CachePriority::Pinned;
+            }
+        }
+        self.save_metadata().await?;
+        info!("Pinned {} tracks to prevent deletion", track_ids.len());
+        Ok(())
+    }
+
+    /// Unpin tracks (restore to normal priority)
+    pub async fn unpin_tracks(&mut self, track_ids: &[String]) -> DabResult<()> {
+        for track_id in track_ids {
+            if let Some(entry) = self.metadata.entries.get_mut(track_id) {
+                if entry.priority == CachePriority::Pinned {
+                    entry.priority = CachePriority::Normal;
+                }
+            }
+        }
+        self.save_metadata().await?;
+        info!("Unpinned {} tracks", track_ids.len());
+        Ok(())
+    }
+
+    /// Get cache statistics
+    pub fn get_cache_stats(&self) -> CacheStats {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let mut stats = CacheStats {
+            total_tracks: self.metadata.entries.len(),
+            total_size_bytes: 0,
+            pinned_tracks: 0,
+            high_priority_tracks: 0,
+            normal_priority_tracks: 0,
+            low_priority_tracks: 0,
+            expired_tracks: 0,
+            average_access_count: 0.0,
+        };
+
+        let mut total_access_count = 0u64;
+
+        for entry in self.metadata.entries.values() {
+            stats.total_size_bytes += entry.size_bytes;
+            total_access_count += entry.access_count;
+
+            match entry.priority {
+                CachePriority::Pinned => stats.pinned_tracks += 1,
+                CachePriority::High => stats.high_priority_tracks += 1,
+                CachePriority::Normal => stats.normal_priority_tracks += 1,
+                CachePriority::Low => stats.low_priority_tracks += 1,
+            }
+
+            if let Some(expires_at) = entry.expires_at {
+                if now > expires_at {
+                    stats.expired_tracks += 1;
+                }
+            }
+        }
+
+        if stats.total_tracks > 0 {
+            stats.average_access_count = total_access_count as f64 / stats.total_tracks as f64;
+        }
+
+        stats
+    }
+
+    /// Periodic maintenance (should be called regularly)
+    pub async fn perform_maintenance(&mut self) -> DabResult<()> {
+        info!("Performing cache maintenance");
+        
+        // Clean up expired entries
+        self.cleanup_expired().await?;
+        
+        // Perform smart cleanup if needed
+        self.enforce_size_limit().await?;
+        
+        // Auto-demote rarely accessed tracks
+        self.auto_adjust_priorities().await?;
+        
+        info!("Cache maintenance completed");
+        Ok(())
+    }
+
+    /// Auto-adjust track priorities based on access patterns
+    async fn auto_adjust_priorities(&mut self) -> DabResult<()> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let mut changes = 0;
+
+        for entry in self.metadata.entries.values_mut() {
+            let days_since_access = (now - entry.last_accessed) as f64 / (24.0 * 3600.0);
+            
+            // Demote high priority tracks that haven't been accessed in a while
+            if entry.priority == CachePriority::High && days_since_access > 7.0 && entry.access_count < 5 {
+                entry.priority = CachePriority::Normal;
+                changes += 1;
+            }
+            
+            // Demote normal priority tracks that are very old and rarely accessed
+            if entry.priority == CachePriority::Normal && days_since_access > 14.0 && entry.access_count < 3 {
+                entry.priority = CachePriority::Low;
+                changes += 1;
+            }
+        }
+
+        if changes > 0 {
+            info!("Auto-adjusted priorities for {} tracks", changes);
+            self.save_metadata().await?;
+        }
+
         Ok(())
     }
 
@@ -707,6 +987,11 @@ impl Cache {
                 unique_id: String::new(),
                 download_status: CacheStatus::PartiallyDownloaded { progress },
                 expected_size: None,
+                // Initialize new fields
+                access_count: 0,
+                priority: CachePriority::Normal,
+                last_played: None,
+                expires_at: None,
             };
 
             self.metadata.entries.insert(track_id.to_string(), entry);
@@ -778,6 +1063,15 @@ impl Cache {
             unique_id: String::new(),
             download_status: CacheStatus::PartiallyDownloaded { progress: 0.0 },
             expected_size,
+            // Initialize new fields
+            access_count: 0,
+            priority: CachePriority::Normal,
+            last_played: None,
+            expires_at: if url.starts_with("http") {
+                Some(now + (self.stream_url_expire_hours as u64 * 3600))
+            } else {
+                None
+            },
         };
 
         self.metadata.entries.insert(track_id.to_string(), entry);
@@ -882,4 +1176,16 @@ pub struct AlbumInfo {
     pub track_count: usize,
     pub total_size_bytes: u64,
     pub cover_art_hash: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CacheStats {
+    pub total_tracks: usize,
+    pub total_size_bytes: u64,
+    pub pinned_tracks: usize,
+    pub high_priority_tracks: usize,
+    pub normal_priority_tracks: usize,
+    pub low_priority_tracks: usize,
+    pub expired_tracks: usize,
+    pub average_access_count: f64,
 }

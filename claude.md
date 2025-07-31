@@ -36,6 +36,7 @@ You run in an environment where ast-grep is available; whenever a search require
 - 在封面图底部显示 TUI 风格的音频播放可视化效果
 - TUI header 内显示当前播放的曲目信息和 duration，播放信息的文本右对齐，长度超过当前窗口时左右滚动显示
     | Dab Music Player |                 track - album - artist | duration |
+- Library 内显示之前收藏的专辑，显示为 aritst - album，支持快捷键播放当前专辑以及查看歌手的 discography 信息
 
 - 在任意界面的歌曲列表上, 快捷键设置
     -  @resource/openapi.yaml 使用api里的 discography 和 album 接口, 
@@ -46,6 +47,7 @@ You run in an environment where ast-grep is available; whenever a search require
     - 按键 / 进行搜索
     - 按键 a 添加当前歌曲到播放队列的下一首
     - 按键 A 清空当前播放队列, 将当前界面的所有歌曲写入播放队列
+    - 按键 m 将当前专辑加入 library，持久化记录每次启动 tui 时自动加载
 
 - 每次修改业务逻辑时保持 ./README.md 和 ./TUI_SHORTCUTS.md 内容的及时有效更新
     - 使用 asciiart 风格将各 view 的 UI 绘制在 README 顶部的标题下方
