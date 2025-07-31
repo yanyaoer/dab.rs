@@ -1,3 +1,4 @@
+pub mod async_client;
 pub mod cache;
 pub mod cli;
 pub mod config;
@@ -8,6 +9,7 @@ pub mod player;
 pub mod search;
 pub mod tui;
 
+pub use async_client::{AsyncClient, AsyncNetworkClient, NetworkManager};
 pub use cache::{Cache, CacheStatus};
 pub use cli::Cli;
 pub use config::Config;

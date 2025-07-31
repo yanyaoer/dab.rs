@@ -1,8 +1,8 @@
+use crate::async_client::{AsyncClient, AsyncNetworkClient, NetworkManager};
 use crate::cache::Cache;
 use crate::error::DabResult;
 use crate::library::Library;
 use crate::player::PlayerEngine;
-use crate::search::MusicSearchApi;
 use crate::tui::TuiApp;
 use clap::{Parser, Subcommand};
 use log::{error, info};
@@ -67,6 +67,14 @@ impl Cli {
         let cache = Cache::new().await?;
         let library = Library::new(cache.clone()).await?;
         let mut player = PlayerEngine::new().await?;
+
+        // Setup async network client
+        let async_client = AsyncClient::new();
+        let (network_manager, command_tx) = NetworkManager::new(async_client);
+        let network_client = AsyncNetworkClient::new(command_tx);
+
+        // Start background network manager
+        let _network_task = tokio::spawn(network_manager.run());
 
         match self.command {
             Some(Commands::Play { track }) => {
@@ -155,7 +163,6 @@ impl Cli {
                     "Performing search for query: {} (type: {}, limit: {})",
                     query, r#type, limit
                 );
-                let search_api = MusicSearchApi::new();
 
                 // Validate search type
                 let search_type = r#type.as_str();
@@ -177,8 +184,20 @@ impl Cli {
 
                 match search_type {
                     "track" => {
-                        match search_api.search_tracks(&query, limit).await {
-                            Ok(tracks) => {
+                        match network_client
+                            .search(query.clone(), "track".to_string(), limit)
+                            .await
+                        {
+                            Ok(search_result) => {
+                                let mut tracks = Vec::new();
+                                for item in search_result.get_results() {
+                                    if let crate::search::SearchResultItem::Track(dab_track) = item
+                                    {
+                                        tracks
+                                            .push(crate::player::Track::from_dab_track(&dab_track));
+                                    }
+                                }
+
                                 info!(
                                     "Track search completed successfully, found {} results",
                                     tracks.len()
@@ -245,8 +264,18 @@ impl Cli {
                             }
                         }
                     }
-                    "album" => match search_api.search_albums(&query, limit).await {
-                        Ok(albums) => {
+                    "album" => match network_client
+                        .search(query.clone(), "album".to_string(), limit)
+                        .await
+                    {
+                        Ok(search_result) => {
+                            let mut albums = Vec::new();
+                            for item in search_result.get_results() {
+                                if let crate::search::SearchResultItem::Album(album) = item {
+                                    albums.push(album);
+                                }
+                            }
+
                             info!(
                                 "Album search completed successfully, found {} results",
                                 albums.len()
@@ -288,8 +317,18 @@ impl Cli {
                             eprintln!("Album search failed: {}", e);
                         }
                     },
-                    "artist" => match search_api.search_artists(&query, limit).await {
-                        Ok(artists) => {
+                    "artist" => match network_client
+                        .search(query.clone(), "artist".to_string(), limit)
+                        .await
+                    {
+                        Ok(search_result) => {
+                            let mut artists = Vec::new();
+                            for item in search_result.get_results() {
+                                if let crate::search::SearchResultItem::Artist(artist) = item {
+                                    artists.push(artist);
+                                }
+                            }
+
                             info!(
                                 "Artist search completed successfully, found {} results",
                                 artists.len()
@@ -310,7 +349,9 @@ impl Cli {
                                 }
 
                                 if let Some(image) = &artist.image {
-                                    eprintln!("   Image: {}", image);
+                                    if let Some(large_image) = &image.large {
+                                        eprintln!("   Image: {}", large_image);
+                                    }
                                 }
 
                                 if let Some(biography) = &artist.biography {
@@ -353,13 +394,13 @@ impl Cli {
             }
             Some(Commands::Tui) => {
                 info!("Starting TUI interface");
-                let mut tui = TuiApp::new(player, library).await?;
+                let mut tui = TuiApp::new(player, library, network_client).await?;
                 tui.run().await?;
             }
             None => {
                 info!("No command specified, starting TUI interface");
                 // Default to TUI if no command specified
-                let mut tui = TuiApp::new(player, library).await?;
+                let mut tui = TuiApp::new(player, library, network_client).await?;
                 tui.run().await?;
             }
         }

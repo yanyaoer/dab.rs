@@ -29,7 +29,7 @@ impl Default for Config {
                 .join("dab")
                 .to_string_lossy()
                 .to_string(),
-            max_cache_size_mb: 1024, // 1GB
+            max_cache_size_mb: 1024 * 5, // 5GB
             audio_quality: AudioQuality::High,
             volume: 0.8,
             crossfade_ms: 0,

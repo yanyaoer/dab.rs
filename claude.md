@@ -31,12 +31,15 @@ You run in an environment where ast-grep is available; whenever a search require
     - 如果播放队列的下一首歌曲没有缓存, 且当前歌曲已加载完成, 提前进行预加载
     - 并在 library 中按照 id3 标签显示本地歌曲信息
         - 以 artist - album - title 格式显示, 支持层级展开和收起
+    - 缓存过期清理，仅在 audio 类型文件上工作
 
 - 支持 kitty 图片协议, 选中歌曲时将歌曲封面作为背景图片显示在右下角
 - 在封面图底部显示 TUI 风格的音频播放可视化效果
 - TUI header 内显示当前播放的曲目信息和 duration，播放信息的文本右对齐，长度超过当前窗口时左右滚动显示
     | Dab Music Player |                 track - album - artist | duration |
 - Library 内显示之前收藏的专辑，显示为 aritst - album，支持快捷键播放当前专辑以及查看歌手的 discography 信息
+- 主意ui组件的复用和按键绑定，预期在所有的 album 列表和歌曲列表(包含播放队列和favorite)                                        │
+│   都支持跳转到专辑详情页和歌手的discog页，回车键的行为统一为播放当前歌曲或者整张专辑   
 
 - 在任意界面的歌曲列表上, 快捷键设置
     -  @resource/openapi.yaml 使用api里的 discography 和 album 接口, 

@@ -9,32 +9,50 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Paragraph},
     Frame, Terminal,
 };
 use std::io;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 
+use super::components::UnifiedList;
+use super::handlers::{KeyHandler, NavigationAction};
+use crate::async_client::{AsyncNetworkClient, NetworkManager};
 use crate::cache::Cache;
 use crate::error::{DabError, DabResult};
-use crate::library::{Album, Library};
+use crate::library::Library;
 use crate::player::{PlayerEngine, PlayerEvent, PlayerState, Track};
-use crate::search::{DabAlbum, DabArtist, DabTrack, MusicSearchApi};
+use crate::search::{DabAlbum, DabArtist, DabTrack};
+
+// Search state management for non-blocking operations
+#[derive(Debug, Clone)]
+enum SearchState {
+    Idle,
+    Searching,
+    Completed,
+    Failed(String),
+}
+
+#[derive(Debug, Clone)]
+struct SearchResult {
+    query: String,
+    search_type: SearchType,
+    tracks: Vec<Track>,
+    raw_tracks: Vec<DabTrack>,
+}
 
 pub struct TuiApp {
     player: PlayerEngine,
     library: Library,
     cache: Arc<tokio::sync::RwLock<Cache>>,
-    search_api: MusicSearchApi,
+    network_client: AsyncNetworkClient,
+    key_handler: KeyHandler,
     should_quit: bool,
     current_view: View,
-    list_state: ListState,
-    album_detail_state: ListState,
-    queue_state: ListState,
-    tracks: Vec<Track>,
-    queue_tracks: Vec<Track>,
-    current_queue_index: Option<usize>,
-    selected_album: Option<Album>,
+    // Unified list components
+    main_list: UnifiedList,
+    queue_list: UnifiedList,
     status_message: Option<String>,
     // Player status display
     current_track: Option<Track>,
@@ -48,9 +66,12 @@ pub struct TuiApp {
     // Search state
     search_mode: bool,
     search_query: String,
-    search_results: Vec<Track>,
     search_results_raw: Vec<DabTrack>, // Store original DabTrack data
     search_type: SearchType,
+    // Async search state
+    search_state: SearchState,
+    search_rx: mpsc::UnboundedReceiver<SearchResult>,
+    search_tx: mpsc::UnboundedSender<SearchResult>,
     // Extended album/artist detail views
     detailed_album: Option<DabAlbum>,
     detailed_artist: Option<DabArtist>,
@@ -101,22 +122,28 @@ enum View {
 }
 
 impl TuiApp {
-    pub async fn new(player: PlayerEngine, library: Library) -> DabResult<Self> {
+    pub async fn new(
+        player: PlayerEngine,
+        library: Library,
+        network_client: AsyncNetworkClient,
+    ) -> DabResult<Self> {
         let cache = Cache::new().await?;
+        let key_handler = KeyHandler::new();
+
+        // Create async search channel
+        let (search_tx, search_rx) = mpsc::unbounded_channel();
+
         Ok(Self {
             player,
             library,
             cache: Arc::new(tokio::sync::RwLock::new(cache)),
-            search_api: MusicSearchApi::new(),
+            network_client,
+            key_handler,
             should_quit: false,
             current_view: View::Library,
-            list_state: ListState::default(),
-            album_detail_state: ListState::default(),
-            queue_state: ListState::default(),
-            tracks: Vec::new(),
-            queue_tracks: Vec::new(),
-            current_queue_index: None,
-            selected_album: None,
+            // Unified list components
+            main_list: UnifiedList::new("Library".to_string()),
+            queue_list: UnifiedList::new("Queue".to_string()),
             status_message: None,
             // Player status display
             current_track: None,
@@ -130,9 +157,12 @@ impl TuiApp {
             // Search state
             search_mode: false,
             search_query: String::new(),
-            search_results: Vec::new(),
             search_results_raw: Vec::new(),
             search_type: SearchType::Track,
+            // Async search state
+            search_state: SearchState::Idle,
+            search_rx,
+            search_tx,
             detailed_album: None,
             detailed_artist: None,
             artist_albums: Vec::new(),
@@ -149,8 +179,8 @@ impl TuiApp {
 
         info!("TUI started");
 
-        // Initialize tracks list
-        self.refresh_tracks_list().await;
+        // Initialize lists
+        self.refresh_main_list().await;
 
         loop {
             // Update player status for header display
@@ -171,6 +201,11 @@ impl TuiApp {
             // Handle player events
             while let Some(event) = self.player.next_event().await {
                 self.handle_player_event(event).await;
+            }
+
+            // Handle async search results
+            while let Ok(search_result) = self.search_rx.try_recv() {
+                self.handle_search_result(search_result).await;
             }
 
             if self.should_quit {
@@ -306,12 +341,9 @@ impl TuiApp {
 
         // Main content
         match self.current_view {
-            View::Library => self.render_library(f, chunks[1]),
-            View::AlbumDetail => self.render_album_detail(f, chunks[1]),
-            View::Queue => self.render_queue(f, chunks[1]),
+            View::Queue => self.queue_list.render(f, chunks[1]),
             View::Search => self.render_search(f, chunks[1]),
-            View::DetailedAlbum => self.render_detailed_album(f, chunks[1]),
-            View::ArtistDiscography => self.render_artist_discography(f, chunks[1]),
+            _ => self.main_list.render(f, chunks[1]),
         }
 
         // Player controls
@@ -387,163 +419,17 @@ impl TuiApp {
     }
 
     fn render_library(&mut self, f: &mut Frame, area: Rect) {
-        let favorite_albums = self.library.get_favorite_albums();
-
-        let items: Vec<ListItem> = favorite_albums
-            .iter()
-            .map(|album| {
-                ListItem::new(Line::from(vec![
-                    Span::styled(
-                        format!("{} - {}", album.artist, album.title),
-                        Style::default().fg(Color::White),
-                    ),
-                    Span::styled(
-                        format!(
-                            " ({})",
-                            album.release_date.as_deref().unwrap_or("Unknown year")
-                        ),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ]))
-            })
-            .collect();
-
-        let list = List::new(items)
-            .block(
-                Block::default()
-                    .title("Favorite Albums")
-                    .borders(Borders::ALL),
-            )
-            .highlight_style(Style::default().bg(Color::DarkGray))
-            .highlight_symbol("► ");
-
-        f.render_stateful_widget(list, area, &mut self.list_state);
+        self.main_list.render(f, area);
     }
 
     fn render_album_detail(&mut self, f: &mut Frame, area: Rect) {
-        if let Some(album) = &self.selected_album {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(3), // Album Info
-                    Constraint::Min(0),    // Tracks
-                ])
-                .split(area);
-
-            let album_info = Paragraph::new(format!("Album: {} by {}", album.title, album.artist))
-                .block(Block::default().title("Album Info").borders(Borders::ALL));
-            f.render_widget(album_info, chunks[0]);
-
-            let tracks = self.library.get_tracks_by_album(&album.title);
-            let items: Vec<ListItem> = tracks
-                .iter()
-                .enumerate()
-                .map(|(i, track)| {
-                    let cached_indicator = if track.is_local() { " [local]" } else { "" };
-
-                    ListItem::new(Line::from(vec![
-                        Span::styled(format!("{}. ", i + 1), Style::default().fg(Color::Gray)),
-                        Span::styled(&track.title, Style::default().fg(Color::White)),
-                        Span::styled(cached_indicator, Style::default().fg(Color::Green)),
-                    ]))
-                })
-                .collect();
-
-            let list = List::new(items)
-                .block(
-                    Block::default()
-                        .title(format!(
-                            "Tracks ({}) - Press 'a' to add next, 'A' to play all",
-                            tracks.len()
-                        ))
-                        .borders(Borders::ALL),
-                )
-                .highlight_style(Style::default().bg(Color::DarkGray))
-                .highlight_symbol("► ");
-
-            f.render_stateful_widget(list, chunks[1], &mut self.album_detail_state);
-        }
+        // Now handled by unified main_list
+        self.main_list.render(f, area);
     }
 
     fn render_queue(&mut self, f: &mut Frame, area: Rect) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3), // Queue info
-                Constraint::Min(0),    // Queue tracks
-            ])
-            .split(area);
-
-        // Queue info
-        let queue_info_text = format!(
-            "Queue: {} tracks | Current: {}",
-            self.queue_tracks.len(),
-            self.current_queue_index
-                .map(|i| format!("#{}", i + 1))
-                .unwrap_or_else(|| "None".to_string())
-        );
-
-        let queue_info = Paragraph::new(queue_info_text)
-            .block(Block::default().title("Queue Info").borders(Borders::ALL))
-            .style(Style::default().fg(Color::Cyan));
-        f.render_widget(queue_info, chunks[0]);
-
-        // Queue tracks
-        if !self.queue_tracks.is_empty() {
-            let items: Vec<ListItem> = self
-                .queue_tracks
-                .iter()
-                .enumerate()
-                .map(|(i, track)| {
-                    let is_current = self.current_queue_index == Some(i);
-                    let prefix = if is_current { "▶ " } else { "  " };
-
-                    let cached_indicator = if track.is_local() { " [local]" } else { "" };
-
-                    let style = if is_current {
-                        Style::default()
-                            .fg(Color::Green)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default()
-                    };
-
-                    ListItem::new(Line::from(vec![
-                        Span::styled(
-                            format!("{}{}. ", prefix, i + 1),
-                            Style::default().fg(Color::Gray),
-                        ),
-                        Span::styled(&track.title, style),
-                        Span::raw(" - "),
-                        Span::styled(&track.album, Style::default().fg(Color::Blue)),
-                        Span::raw(" - "),
-                        Span::styled(&track.artist, Style::default().fg(Color::Yellow)),
-                        Span::styled(cached_indicator, Style::default().fg(Color::Green)),
-                    ]))
-                })
-                .collect();
-
-            let list = List::new(items)
-                .block(
-                    Block::default()
-                        .title(format!(
-                            "Queue Tracks - Press 'd' to remove, 'c' to clear all, 'Enter' to play"
-                        ))
-                        .borders(Borders::ALL),
-                )
-                .highlight_style(Style::default().bg(Color::DarkGray))
-                .highlight_symbol("► ");
-
-            f.render_stateful_widget(list, chunks[1], &mut self.queue_state);
-        } else {
-            let empty_queue = Paragraph::new(
-                "Queue is empty\nAdd tracks from Library or Search views using 'a' key",
-            )
-            .block(Block::default().title("Empty Queue").borders(Borders::ALL))
-            .style(Style::default().fg(Color::Gray))
-            .wrap(ratatui::widgets::Wrap { trim: true });
-            f.render_widget(empty_queue, chunks[1]);
-        }
+        // Now handled by unified queue_list
+        self.queue_list.render(f, area);
     }
 
     fn render_search(&mut self, f: &mut Frame, area: Rect) {
@@ -582,40 +468,10 @@ impl TuiApp {
             .block(Block::default().title("Search Type").borders(Borders::ALL));
         f.render_widget(type_selector, chunks[1]);
 
-        // Search results
-        if !self.search_results.is_empty() {
-            let items: Vec<ListItem> = self
-                .search_results
-                .iter()
-                .enumerate()
-                .map(|(_i, track)| {
-                    let cached_indicator = if track.is_local() { " [local]" } else { "" };
-
-                    ListItem::new(Line::from(vec![
-                        Span::styled(&track.artist, Style::default().fg(Color::Cyan)),
-                        Span::raw(" - "),
-                        Span::styled(&track.album, Style::default().fg(Color::Blue)),
-                        Span::raw(" - "),
-                        Span::styled(&track.title, Style::default().fg(Color::White)),
-                        Span::styled(cached_indicator, Style::default().fg(Color::Green)),
-                    ]))
-                })
-                .collect();
-
-            let list = List::new(items)
-                .block(
-                    Block::default()
-                        .title(format!(
-                            "Search Results ({}) - Press 'l' for album, 'h' for artist",
-                            self.search_results.len()
-                        ))
-                        .borders(Borders::ALL),
-                )
-                .highlight_style(Style::default().bg(Color::DarkGray))
-                .highlight_symbol("► ");
-
-            f.render_stateful_widget(list, chunks[2], &mut self.list_state);
-        } else if self.current_view == View::Search && !self.search_mode {
+        // Search results using unified list
+        if !self.main_list.items.is_empty() {
+            self.main_list.render(f, chunks[2]);
+        } else if !self.search_mode {
             let cache_info = if let Ok(cache) = self.cache.try_read() {
                 format!(
                     "\nCache: {} tracks ({} MB)\nID3 metadata: tracks with tags",
@@ -665,39 +521,10 @@ impl TuiApp {
             );
             f.render_widget(album_info, chunks[0]);
 
-            // Tracks
-            if let Some(tracks) = &album.tracks {
-                let items: Vec<ListItem> = tracks
-                    .iter()
-                    .enumerate()
-                    .map(|(i, track)| {
-                        let duration = track
-                            .duration
-                            .map(|d| format!(" ({}:{:02})", d / 60, d % 60))
-                            .unwrap_or_default();
-                        ListItem::new(format!("{}. {}{}", i + 1, track.title, duration))
-                    })
-                    .collect();
-
-                let list = List::new(items)
-                    .block(
-                        Block::default()
-                            .title(format!(
-                                "Tracks ({}) - Press 'a' to add next, 'A' to play all, 'h' for artist",
-                                tracks.len()
-                            ))
-                            .borders(Borders::ALL),
-                    )
-                    .highlight_style(Style::default().bg(Color::DarkGray))
-                    .highlight_symbol("► ");
-
-                f.render_stateful_widget(list, chunks[1], &mut self.album_detail_state);
-            } else {
-                let no_tracks = Paragraph::new("No track details available")
-                    .block(Block::default().title("Tracks").borders(Borders::ALL))
-                    .style(Style::default().fg(Color::Gray));
-                f.render_widget(no_tracks, chunks[1]);
-            }
+            // Tracks using unified list
+            self.main_list.render(f, chunks[1]);
+        } else {
+            self.main_list.render(f, area);
         }
     }
 
@@ -730,40 +557,10 @@ impl TuiApp {
             );
             f.render_widget(artist_info, chunks[0]);
 
-            // Albums
-            let items: Vec<ListItem> = self
-                .artist_albums
-                .iter()
-                .map(|album| {
-                    let release_year = album
-                        .release_date
-                        .as_ref()
-                        .and_then(|date| date.split('-').next())
-                        .unwrap_or("Unknown");
-
-                    ListItem::new(Line::from(vec![
-                        Span::styled(
-                            format!("{:<40}", album.title),
-                            Style::default().fg(Color::White),
-                        ),
-                        Span::styled(
-                            format!("{:<10}", release_year),
-                            Style::default().fg(Color::Yellow),
-                        ),
-                        Span::styled(
-                            format!("{} tracks", album.track_count.unwrap_or(0)),
-                            Style::default().fg(Color::Gray),
-                        ),
-                    ]))
-                })
-                .collect();
-
-            let list = List::new(items)
-                .block(Block::default().title("Albums").borders(Borders::ALL))
-                .highlight_style(Style::default().bg(Color::DarkGray))
-                .highlight_symbol("► ");
-
-            f.render_stateful_widget(list, chunks[1], &mut self.list_state);
+            // Albums using unified list
+            self.main_list.render(f, chunks[1]);
+        } else {
+            self.main_list.render(f, area);
         }
     }
 
@@ -793,9 +590,9 @@ impl TuiApp {
             msg.clone()
         } else {
             format!(
-                "View: {:?} | {} tracks",
+                "View: {:?} | {} items",
                 self.current_view,
-                self.tracks.len()
+                self.main_list.items.len()
             )
         };
 
@@ -846,90 +643,50 @@ impl TuiApp {
             }
 
             // Navigation
-            KeyCode::Up | KeyCode::Char('k') => self.list_up(),
-            KeyCode::Down | KeyCode::Char('j') => self.list_down(),
+            KeyCode::Up | KeyCode::Char('k') => match self.current_view {
+                View::Queue => self.queue_list.move_up(),
+                _ => self.main_list.move_up(),
+            },
+            KeyCode::Down | KeyCode::Char('j') => match self.current_view {
+                View::Queue => self.queue_list.move_down(),
+                _ => self.main_list.move_down(),
+            },
             KeyCode::Char('l') => {
-                match self.current_view {
-                    View::Library => {
-                        if let Some(selected_index) = self.list_state.selected() {
-                            let albums = self.library.get_albums();
-                            if let Some(album) = albums.get(selected_index) {
-                                self.selected_album = Some(album.clone().clone());
-                                self.switch_view(View::AlbumDetail).await;
-                            }
+                let current_list = match self.current_view {
+                    View::Queue => &self.queue_list,
+                    _ => &self.main_list,
+                };
+
+                if let Ok(Some(action)) = self
+                    .key_handler
+                    .handle_l_key(current_list, &self.network_client)
+                    .await
+                {
+                    match action {
+                        NavigationAction::ShowAlbumDetail(album_id) => {
+                            self.show_album_detail_by_id(&album_id).await?;
                         }
+                        _ => {}
                     }
-                    View::Search => {
-                        if let Some(selected_index) = self.list_state.selected() {
-                            if let Some(track) = self.search_results.get(selected_index).cloned() {
-                                self.show_detailed_album(&track).await?;
-                            }
-                        }
-                    }
-                    View::ArtistDiscography => {
-                        // Show album details from artist discography
-                        if let Some(selected_index) = self.list_state.selected() {
-                            if let Some(album) = self.artist_albums.get(selected_index).cloned() {
-                                self.show_detailed_album_from_dab_album(&album).await?;
-                            }
-                        }
-                    }
-                    _ => {}
                 }
             }
             KeyCode::Char('h') => {
-                match self.current_view {
-                    View::Library => {
-                        if let Some(selected_index) = self.list_state.selected() {
-                            let favorite_albums = self.library.get_favorite_albums();
-                            if let Some(favorite_album) = favorite_albums.get(selected_index) {
-                                if let Some(artist_id) = &favorite_album.artist_id {
-                                    match self.search_api.get_artist_discography(artist_id).await {
-                                        Ok((artist, albums)) => {
-                                            self.detailed_artist = Some(artist);
-                                            self.artist_albums = albums;
-                                            self.switch_view(View::ArtistDiscography).await;
-                                        }
-                                        Err(e) => {
-                                            self.status_message = Some(format!(
-                                                "Failed to load artist discography: {}",
-                                                e
-                                            ));
-                                        }
-                                    }
-                                } else {
-                                    self.status_message =
-                                        Some("Artist information not available".to_string());
-                                }
-                            }
+                let current_list = match self.current_view {
+                    View::Queue => &self.queue_list,
+                    _ => &self.main_list,
+                };
+
+                if let Ok(Some(action)) = self
+                    .key_handler
+                    .handle_h_key(current_list, &self.network_client)
+                    .await
+                {
+                    match action {
+                        NavigationAction::ShowArtistDiscography(artist_id) => {
+                            self.show_artist_discography_by_id(&artist_id).await?;
                         }
+                        _ => {}
                     }
-                    View::Search => {
-                        if let Some(selected_index) = self.list_state.selected() {
-                            if let Some(track) = self.search_results.get(selected_index).cloned() {
-                                self.show_artist_discography(&track).await?;
-                            }
-                        }
-                    }
-                    View::DetailedAlbum => {
-                        // Go to artist from album view
-                        if let Some(album) = &self.detailed_album {
-                            let fake_track = Track {
-                                id: "temp".to_string(),
-                                title: "temp".to_string(),
-                                artist: album.artist.clone(),
-                                album: album.title.clone(),
-                                duration_ms: 0,
-                                local_path: None,
-                                cover_url: None,
-                                track_id: None,
-                                artist_id: None,
-                                album_id: None,
-                            };
-                            self.show_artist_discography(&fake_track).await?;
-                        }
-                    }
-                    _ => {}
                 }
             }
 
@@ -944,55 +701,34 @@ impl TuiApp {
             KeyCode::Char('p') => self.player.previous().await?,
             KeyCode::Char('s') => self.player.stop().await?,
 
-            // Track selection
-            KeyCode::Enter => match self.current_view {
-                View::Library => {
-                    if let Some(selected_index) = self.list_state.selected() {
-                        let favorite_albums = self.library.get_favorite_albums();
-                        if let Some(favorite_album) = favorite_albums.get(selected_index) {
-                            // Get the full album details and play it
-                            let album_id = &favorite_album.id;
-                            match self.search_api.get_album_info(album_id).await {
-                                Ok(detailed_album) => {
-                                    self.detailed_album = Some(detailed_album);
-                                    self.switch_view(View::DetailedAlbum).await;
-                                }
-                                Err(e) => {
-                                    self.status_message =
-                                        Some(format!("Failed to load album: {}", e));
-                                }
+            // Track selection - unified Enter key behavior
+            KeyCode::Enter => {
+                let current_list = match self.current_view {
+                    View::Queue => &self.queue_list,
+                    _ => &self.main_list,
+                };
+
+                if let Ok(Some(action)) = self
+                    .key_handler
+                    .handle_enter(current_list, &self.network_client)
+                    .await
+                {
+                    match action {
+                        NavigationAction::PlayTrack(track) => {
+                            self.player.load_and_play_track(track.clone()).await?;
+                            self.status_message = Some(format!("Playing: {}", track.title));
+                        }
+                        NavigationAction::PlayAlbum(tracks) => {
+                            if !tracks.is_empty() {
+                                self.player.clear_and_play_tracks(tracks.clone()).await?;
+                                self.status_message =
+                                    Some(format!("Playing album with {} tracks", tracks.len()));
                             }
                         }
+                        _ => {}
                     }
                 }
-                View::AlbumDetail => self.play_selected_track().await?,
-                View::Search => self.play_selected_track().await?,
-                View::DetailedAlbum => self.play_selected_track().await?,
-                View::Queue => {
-                    // Play selected track from queue
-                    if let Some(selected_index) = self.queue_state.selected() {
-                        if selected_index < self.queue_tracks.len() {
-                            let queue = self.player.get_queue();
-                            let _ = queue
-                                .send_command(crate::player::QueueCommand::JumpTo(selected_index))
-                                .await;
-                            if let Some(track) = self.queue_tracks.get(selected_index) {
-                                // Load and play using complete track object
-                                self.player.load_and_play_track(track.clone()).await?;
-                                self.status_message = Some(format!("Playing: {}", track.title));
-                            }
-                        }
-                    }
-                }
-                View::ArtistDiscography => {
-                    // Enter on artist discography shows album details
-                    if let Some(selected_index) = self.list_state.selected() {
-                        if let Some(album) = self.artist_albums.get(selected_index).cloned() {
-                            self.show_detailed_album_from_dab_album(&album).await?;
-                        }
-                    }
-                }
-            },
+            }
             KeyCode::Esc => {
                 // Go back to previous view
                 match self.current_view {
@@ -1006,47 +742,29 @@ impl TuiApp {
                 }
             }
             KeyCode::Char('a') => {
-                match self.current_view {
-                    View::AlbumDetail => {
-                        if let (Some(album), Some(selected_index)) = (
-                            self.selected_album.as_ref(),
-                            self.album_detail_state.selected(),
-                        ) {
-                            let tracks = self.library.get_tracks_by_album(&album.title);
-                            if let Some(track) = tracks.get(selected_index) {
-                                // Pass the complete track object instead of just an identifier
-                                self.player.add_track_next(track.clone()).await?;
-                                self.status_message =
-                                    Some(format!("Added {} to queue next", track.title));
-                            }
+                let current_list = match self.current_view {
+                    View::Queue => &self.queue_list,
+                    _ => &self.main_list,
+                };
+
+                if let Ok(Some(action)) = self
+                    .key_handler
+                    .handle_a_key(current_list, &self.network_client)
+                    .await
+                {
+                    match action {
+                        NavigationAction::AddTrackNext(track) => {
+                            self.player.add_track_next(track.clone()).await?;
+                            self.status_message =
+                                Some(format!("Added {} to queue next", track.title));
                         }
+                        _ => {}
                     }
-                    View::DetailedAlbum => {
-                        // Add track from detailed album view
-                        if let Some(selected_index) = self.album_detail_state.selected() {
-                            if let Some(track) = self.tracks.get(selected_index) {
-                                // Pass the complete track object
-                                self.player.add_track_next(track.clone()).await?;
-                                self.status_message =
-                                    Some(format!("Added {} to queue next", track.title));
-                            }
-                        }
-                    }
-                    View::Search => {
-                        // Add track from search results
-                        if let Some(selected_index) = self.list_state.selected() {
-                            if let Some(track) = self.search_results.get(selected_index).cloned() {
-                                // Pass the complete track object
-                                self.player.add_track_next(track.clone()).await?;
-                                self.status_message =
-                                    Some(format!("Added {} to queue next", track.title));
-                            }
-                        }
-                    }
-                    _ => {}
                 }
             }
             KeyCode::Char('A') => {
+                // TODO: Implement using unified key handler
+                /*
                 match self.current_view {
                     View::Library => {
                         if let Some(selected_index) = self.list_state.selected() {
@@ -1157,39 +875,33 @@ impl TuiApp {
                     }
                     _ => {}
                 }
+                */
             }
 
-            // Queue management keys
+            // Queue management keys - TODO: Implement with unified handlers
             KeyCode::Char('d') => {
-                if self.current_view == View::Queue {
-                    if let Some(selected_index) = self.queue_state.selected() {
-                        if selected_index < self.queue_tracks.len() {
-                            let queue = self.player.get_queue();
-                            let _ = queue
-                                .send_command(crate::player::QueueCommand::RemoveTrack(
-                                    selected_index,
-                                ))
-                                .await;
-                            self.refresh_queue().await;
-                            self.status_message = Some("Track removed from queue".to_string());
-                        }
-                    }
-                }
+                // TODO: Implement queue item removal
+                self.status_message = Some("Queue management not yet implemented".to_string());
             }
             KeyCode::Char('c') => {
-                if self.current_view == View::Queue {
-                    let queue = self.player.get_queue();
-                    let _ = queue.send_command(crate::player::QueueCommand::Clear).await;
-                    self.refresh_queue().await;
-                    self.status_message = Some("Queue cleared".to_string());
-                }
+                // TODO: Implement queue clearing
+                self.status_message = Some("Queue management not yet implemented".to_string());
             }
 
             KeyCode::Char('m') => {
-                match self.current_view {
-                    View::DetailedAlbum => {
-                        if let Some(ref album) = self.detailed_album {
-                            match self.library.add_favorite_album(album) {
+                let current_list = match self.current_view {
+                    View::Queue => &self.queue_list,
+                    _ => &self.main_list,
+                };
+
+                if let Ok(Some(action)) = self
+                    .key_handler
+                    .handle_m_key(current_list, &self.network_client)
+                    .await
+                {
+                    match action {
+                        NavigationAction::AddToFavorites(album) => {
+                            match self.library.add_favorite_album(&album) {
                                 Ok(is_new) => {
                                     if is_new {
                                         self.status_message = Some(format!(
@@ -1209,66 +921,7 @@ impl TuiApp {
                                 }
                             }
                         }
-                    }
-                    View::Search => {
-                        if let Some(selected_index) = self.list_state.selected() {
-                            if let Some(track) = self.search_results_raw.get(selected_index) {
-                                // Convert search result track to a DabAlbum for adding to favorites
-                                if let (Some(album_title), Some(album_id)) =
-                                    (&track.album_title, &track.album_id)
-                                {
-                                    let album = crate::search::DabAlbum {
-                                        id: album_id.clone(),
-                                        title: album_title.clone(),
-                                        artist: track.artist.clone(),
-                                        artist_id: track.artist_id.clone(),
-                                        release_date: track.release_date.clone(),
-                                        genre: track.genre.clone(),
-                                        cover: track.album_cover.clone(),
-                                        tracks: None,
-                                        track_count: None,
-                                        duration: None,
-                                        label: None,
-                                        upc: None,
-                                        url: None,
-                                        streamable: None,
-                                        downloadable: None,
-                                        media_count: None,
-                                        maximum_channel_count: None,
-                                        parental_warning: None,
-                                        popularity: None,
-                                        audio_quality: track.audio_quality.clone(),
-                                    };
-
-                                    match self.library.add_favorite_album(&album) {
-                                        Ok(is_new) => {
-                                            if is_new {
-                                                self.status_message = Some(format!(
-                                                    "Added '{}' by '{}' to library",
-                                                    album.title, album.artist
-                                                ));
-                                            } else {
-                                                self.status_message = Some(format!(
-                                                    "'{}' by '{}' is already in library",
-                                                    album.title, album.artist
-                                                ));
-                                            }
-                                        }
-                                        Err(e) => {
-                                            self.status_message =
-                                                Some(format!("Failed to add to library: {}", e));
-                                        }
-                                    }
-                                } else {
-                                    self.status_message =
-                                        Some("Track doesn't have album information".to_string());
-                                }
-                            }
-                        }
-                    }
-                    _ => {
-                        self.status_message =
-                            Some("'m' key only works in Album Detail or Search view".to_string());
+                        _ => {}
                     }
                 }
             }
@@ -1294,133 +947,19 @@ impl TuiApp {
         }
     }
 
-    fn list_up(&mut self) {
-        match self.current_view {
-            View::AlbumDetail | View::DetailedAlbum => {
-                let i = match self.album_detail_state.selected() {
-                    Some(i) => {
-                        if i == 0 {
-                            if self.tracks.is_empty() {
-                                0
-                            } else {
-                                self.tracks.len() - 1
-                            }
-                        } else {
-                            i - 1
-                        }
-                    }
-                    None => 0,
-                };
-                self.album_detail_state.select(Some(i));
-            }
-            View::Queue => {
-                let i = match self.queue_state.selected() {
-                    Some(i) => {
-                        if i == 0 {
-                            if self.queue_tracks.is_empty() {
-                                0
-                            } else {
-                                self.queue_tracks.len() - 1
-                            }
-                        } else {
-                            i - 1
-                        }
-                    }
-                    None => 0,
-                };
-                self.queue_state.select(Some(i));
-            }
-            _ => {
-                let i = match self.list_state.selected() {
-                    Some(i) => {
-                        if i == 0 {
-                            if self.tracks.is_empty() {
-                                0
-                            } else {
-                                self.tracks.len() - 1
-                            }
-                        } else {
-                            i - 1
-                        }
-                    }
-                    None => 0,
-                };
-                self.list_state.select(Some(i));
-            }
-        }
-    }
-
-    fn list_down(&mut self) {
-        match self.current_view {
-            View::AlbumDetail | View::DetailedAlbum => {
-                let i = match self.album_detail_state.selected() {
-                    Some(i) => {
-                        if self.tracks.is_empty() || i >= self.tracks.len() - 1 {
-                            0
-                        } else {
-                            i + 1
-                        }
-                    }
-                    None => 0,
-                };
-                self.album_detail_state.select(Some(i));
-            }
-            View::Queue => {
-                let i = match self.queue_state.selected() {
-                    Some(i) => {
-                        if self.queue_tracks.is_empty() || i >= self.queue_tracks.len() - 1 {
-                            0
-                        } else {
-                            i + 1
-                        }
-                    }
-                    None => 0,
-                };
-                self.queue_state.select(Some(i));
-            }
-            _ => {
-                let i = match self.list_state.selected() {
-                    Some(i) => {
-                        if self.tracks.is_empty() || i >= self.tracks.len() - 1 {
-                            0
-                        } else {
-                            i + 1
-                        }
-                    }
-                    None => 0,
-                };
-                self.list_state.select(Some(i));
-            }
-        }
-    }
+    // Navigation methods removed - now handled by UnifiedList
 
     async fn switch_view(&mut self, view: View) {
         if self.current_view != view {
             self.current_view = view.clone();
-            self.refresh_tracks_list().await;
+            self.refresh_main_list().await;
 
             match view {
-                View::AlbumDetail | View::DetailedAlbum => {
-                    self.album_detail_state.select(if self.tracks.is_empty() {
-                        None
-                    } else {
-                        Some(0)
-                    });
-                }
                 View::Queue => {
                     self.refresh_queue().await;
-                    self.queue_state.select(if self.queue_tracks.is_empty() {
-                        None
-                    } else {
-                        Some(0)
-                    });
                 }
                 _ => {
-                    self.list_state.select(if self.tracks.is_empty() {
-                        None
-                    } else {
-                        Some(0)
-                    });
+                    // Lists reset their own selection
                 }
             }
         }
@@ -1428,112 +967,166 @@ impl TuiApp {
 
     async fn refresh_queue(&mut self) {
         let queue = self.player.get_queue();
-        self.queue_tracks = queue.get_queue().await;
-        self.current_queue_index = queue.get_current_index().await;
+        let queue_tracks = queue.get_queue().await;
+        let current_queue_index = queue.get_current_index().await;
+
+        self.queue_list = UnifiedList::new("Queue".to_string())
+            .with_queue_tracks(queue_tracks, current_queue_index)
+            .with_help(true);
     }
 
-    async fn refresh_tracks_list(&mut self) {
-        self.tracks = match self.current_view {
+    async fn refresh_main_list(&mut self) {
+        match self.current_view {
             View::Library => {
-                self.library
-                    .get_favorite_albums()
-                    .into_iter()
-                    .map(|album| Track {
-                        id: album.id.clone(), // Using album ID as the track ID
-                        title: album.title.clone(),
-                        artist: album.artist.clone(),
-                        album: album.title.clone(),
-                        duration_ms: 0,
-                        local_path: None,
-                        cover_url: album.cover.clone(),
-                        track_id: Some(album.id.clone()),
-                        artist_id: album.artist_id.clone(),
-                        album_id: Some(album.id.clone()),
-                    })
-                    .collect()
+                let favorite_albums = self.library.get_favorite_albums();
+                self.main_list = UnifiedList::new("Favorite Albums".to_string())
+                    .with_favorite_albums(favorite_albums)
+                    .with_help(true);
             }
             View::AlbumDetail => {
-                if let Some(album) = &self.selected_album {
-                    self.library.get_tracks_by_album(&album.title)
-                } else {
-                    Vec::new()
-                }
+                // AlbumDetail view is now replaced by DetailedAlbum
+                // Convert to DetailedAlbum view if needed
+                self.main_list = UnifiedList::new("Album Detail".to_string());
             }
             View::Queue => {
-                // Queue tracks are handled separately in refresh_queue()
-                Vec::new()
+                // Queue is handled separately in refresh_queue_list()
             }
             View::Search => {
-                // Return search results
-                self.search_results.clone()
+                // Initialize empty search results, actual results are updated in perform_search()
+                if self.main_list.items.is_empty() {
+                    self.main_list =
+                        UnifiedList::new(format!("Search: {}", self.search_type.display_name()))
+                            .with_help(true);
+                }
             }
             View::DetailedAlbum => {
-                // Convert DabTrack to Track for the detailed album view
                 if let Some(album) = &self.detailed_album {
                     if let Some(tracks) = &album.tracks {
-                        tracks
+                        let player_tracks: Vec<Track> = tracks
                             .iter()
-                            .map(|dab_track| Track {
-                                id: dab_track.id.clone(),
-                                title: dab_track.title.clone(),
-                                artist: dab_track.artist.clone(),
-                                album: dab_track
-                                    .album_title
-                                    .as_ref()
-                                    .unwrap_or(&album.title)
-                                    .clone(),
-                                duration_ms: dab_track.duration.map(|s| s * 1000).unwrap_or(0),
-                                local_path: None,
-                                cover_url: dab_track.album_cover.clone(),
-                                track_id: Some(dab_track.id.clone()),
-                                artist_id: dab_track.artist_id.clone(),
-                                album_id: dab_track.album_id.clone(),
-                            })
-                            .collect()
+                            .map(|dab_track| Track::from_dab_track(dab_track))
+                            .collect();
+                        self.main_list = UnifiedList::new(format!("Album: {}", album.title))
+                            .with_tracks(player_tracks)
+                            .with_help(true);
                     } else {
-                        Vec::new()
+                        self.main_list = UnifiedList::new("Album Detail".to_string());
                     }
                 } else {
-                    Vec::new()
+                    self.main_list = UnifiedList::new("Album Detail".to_string());
                 }
             }
             View::ArtistDiscography => {
-                // Convert albums to tracks for display
-                self.artist_albums
-                    .iter()
-                    .map(|album| Track {
-                        id: album.id.clone(),
-                        title: format!("[Album] {}", album.title),
-                        artist: album.artist.clone(),
-                        album: album.title.clone(),
-                        duration_ms: album.duration.map(|s| s * 1000).unwrap_or(0),
-                        local_path: None,
-                        cover_url: album.cover.clone(),
-                        track_id: None,
-                        artist_id: None,
-                        album_id: Some(album.id.clone()),
-                    })
-                    .collect()
+                if let Some(artist) = &self.detailed_artist {
+                    self.main_list = UnifiedList::new(format!("Artist: {}", artist.name))
+                        .with_dab_albums(self.artist_albums.clone())
+                        .with_help(true);
+                } else {
+                    self.main_list = UnifiedList::new("Artist Discography".to_string());
+                }
             }
-        };
+        }
+    }
+
+    async fn handle_search_result(&mut self, search_result: SearchResult) {
+        // Update main list with search results
+        match search_result.search_type {
+            SearchType::Track => {
+                self.main_list = UnifiedList::new(format!(
+                    "Search Results: {}",
+                    search_result.search_type.display_name()
+                ))
+                .with_tracks(search_result.tracks)
+                .with_help(true);
+            }
+            SearchType::Album | SearchType::Artist => {
+                self.main_list = UnifiedList::new(format!(
+                    "Search Results: {}",
+                    search_result.search_type.display_name()
+                ))
+                .with_tracks(search_result.tracks)
+                .with_help(true);
+            }
+        }
+
+        // Store raw DabTrack data for artist_id extraction
+        self.search_results_raw = search_result.raw_tracks;
+
+        // Update search state
+        self.search_state = SearchState::Completed;
+
+        let cached_count = self.count_cached_tracks().await;
+        self.status_message = Some(format!(
+            "Found {} {} for '{}' ({} cached)",
+            self.main_list.items.len(),
+            search_result.search_type.display_name().to_lowercase(),
+            search_result.query,
+            cached_count
+        ));
     }
 
     async fn perform_search(&mut self) -> DabResult<()> {
+        // Update search state
+        self.search_state = SearchState::Searching;
         self.status_message = Some(format!(
             "Searching for '{}' in {}...",
             self.search_query,
             self.search_type.display_name().to_lowercase()
         ));
 
-        // Use cache-aware search based on search type
-        let cache = self.cache.read().await;
+        // Spawn background search task
+        let query = self.search_query.clone();
+        let search_type = self.search_type.clone();
+        let network_client = self.network_client.clone();
+        let cache = self.cache.clone();
+        let search_tx = self.search_tx.clone();
 
-        let search_results = match self.search_type {
+        tokio::spawn(async move {
+            match Self::perform_background_search(
+                query.clone(),
+                search_type.clone(),
+                network_client,
+                cache,
+            )
+            .await
+            {
+                Ok((tracks, raw_tracks)) => {
+                    let search_result = SearchResult {
+                        query,
+                        search_type,
+                        tracks,
+                        raw_tracks,
+                    };
+
+                    // Send result back to main thread
+                    if let Err(e) = search_tx.send(search_result) {
+                        log::error!("Failed to send search result: {}", e);
+                    }
+                }
+                Err(e) => {
+                    log::error!("Background search failed: {}", e);
+                    // TODO: Send error result back to main thread
+                }
+            }
+        });
+
+        Ok(())
+    }
+
+    async fn perform_background_search(
+        query: String,
+        search_type: SearchType,
+        network_client: AsyncNetworkClient,
+        cache: Arc<tokio::sync::RwLock<Cache>>,
+    ) -> DabResult<(Vec<Track>, Vec<DabTrack>)> {
+        // Use cache-aware search based on search type
+        let cache_read = cache.read().await;
+
+        let (tracks, raw_tracks) = match search_type {
             SearchType::Track => {
                 // Get DabTrack results to store artist_id information
-                let search_result = self
-                    .search_api
-                    .search(&self.search_query, self.search_type.as_str(), 20)
+                let search_result = network_client
+                    .search(query, search_type.as_str().to_string(), 20)
                     .await?;
 
                 let mut tracks = Vec::new();
@@ -1549,23 +1142,17 @@ impl TuiApp {
                             raw_tracks.push(dab_track);
                         }
                         _ => {
-                            debug!("Skipping non-track item in track search");
+                            log::debug!("Skipping non-track item in track search");
                         }
                     }
                 }
 
-                // Store raw DabTrack data for artist_id extraction
-                self.search_results_raw = raw_tracks;
-                tracks
+                (tracks, raw_tracks)
             }
             SearchType::Album => {
-                // Clear raw tracks for album search
-                self.search_results_raw.clear();
-
                 // Get search results and extract albums from tracks
-                let search_result = self
-                    .search_api
-                    .search(&self.search_query, self.search_type.as_str(), 20)
+                let search_result = network_client
+                    .search(query, search_type.as_str().to_string(), 20)
                     .await?;
 
                 let mut tracks = Vec::new();
@@ -1613,21 +1200,17 @@ impl TuiApp {
                             }
                         }
                         _ => {
-                            debug!("Skipping non-album/track item in album search");
+                            log::debug!("Skipping non-album/track item in album search");
                         }
                     }
                 }
 
-                tracks
+                (tracks, Vec::new())
             }
             SearchType::Artist => {
-                // Clear raw tracks for artist search
-                self.search_results_raw.clear();
-
                 // Get search results and extract artists from tracks
-                let search_result = self
-                    .search_api
-                    .search(&self.search_query, self.search_type.as_str(), 20)
+                let search_result = network_client
+                    .search(query, search_type.as_str().to_string(), 20)
                     .await?;
 
                 let mut tracks = Vec::new();
@@ -1665,46 +1248,28 @@ impl TuiApp {
                             });
                         }
                         _ => {
-                            debug!("Skipping non-artist/track item in artist search");
+                            log::debug!("Skipping non-artist/track item in artist search");
                         }
                     }
                 }
 
-                tracks
+                (tracks, Vec::new())
             }
         };
 
-        drop(cache); // Release the lock
-        self.search_results = search_results;
+        drop(cache_read); // Release the lock
 
-        let cached_count = self.count_cached_tracks().await;
-        self.status_message = Some(format!(
-            "Found {} {} for '{}' ({} cached)",
-            self.search_results.len(),
-            self.search_type.display_name().to_lowercase(),
-            self.search_query,
-            cached_count
-        ));
-
-        // Reset list state to top
-        self.list_state.select(if self.search_results.is_empty() {
-            None
-        } else {
-            Some(0)
-        });
-
-        // Refresh tracks list to show search results
-        self.refresh_tracks_list().await;
-
-        Ok(())
+        Ok((tracks, raw_tracks))
     }
 
     async fn count_cached_tracks(&self) -> usize {
         let cache = self.cache.read().await;
         let mut cached_count = 0;
-        for track in &self.search_results {
-            if let Ok(true) = cache.has_track(&track.id).await {
-                cached_count += 1;
+        for item in &self.main_list.items {
+            if let Some(track) = item.get_track() {
+                if let Ok(true) = cache.has_track(&track.id).await {
+                    cached_count += 1;
+                }
             }
         }
         cached_count
@@ -1718,8 +1283,12 @@ impl TuiApp {
             PlayerState::Playing => self.player.pause().await,
             PlayerState::Paused => self.player.resume().await,
             PlayerState::Stopped => {
-                if let Some(track) = self.tracks.get(0) {
-                    self.player.load_and_play_track(track.clone()).await
+                if let Some(item) = self.main_list.items.get(0) {
+                    if let Some(track) = item.get_track() {
+                        self.player.load_and_play_track(track.clone()).await
+                    } else {
+                        Ok(())
+                    }
                 } else {
                     Ok(())
                 }
@@ -1729,13 +1298,13 @@ impl TuiApp {
     }
 
     async fn play_selected_track(&mut self) -> DabResult<()> {
-        let selected_index = match self.current_view {
-            View::AlbumDetail | View::DetailedAlbum => self.album_detail_state.selected(),
-            _ => self.list_state.selected(),
+        let current_list = match self.current_view {
+            View::Queue => &self.queue_list,
+            _ => &self.main_list,
         };
 
-        if let Some(selected_index) = selected_index {
-            if let Some(track) = self.tracks.get(selected_index) {
+        if let Some(item) = current_list.get_selected_item() {
+            if let Some(track) = item.get_track() {
                 self.status_message = Some(format!("Now playing: {}", track.title));
                 self.player.load_and_play_track(track.clone()).await?;
             }
@@ -1747,7 +1316,7 @@ impl TuiApp {
         if let Some(album_id) = self.extract_album_id(track) {
             self.status_message = Some(format!("Loading album details for {}...", track.album));
 
-            match self.search_api.get_album_info(&album_id).await {
+            match self.network_client.get_album(album_id).await {
                 Ok(album) => {
                     self.detailed_album = Some(album);
                     self.switch_view(View::DetailedAlbum).await;
@@ -1766,7 +1335,7 @@ impl TuiApp {
     async fn show_detailed_album_from_dab_album(&mut self, album: &DabAlbum) -> DabResult<()> {
         self.status_message = Some(format!("Loading album details for {}...", album.title));
 
-        match self.search_api.get_album_info(&album.id).await {
+        match self.network_client.get_album(album.id.clone()).await {
             Ok(detailed_album) => {
                 self.detailed_album = Some(detailed_album);
                 self.switch_view(View::DetailedAlbum).await;
@@ -1792,7 +1361,7 @@ impl TuiApp {
                 artist_id, track.artist
             );
 
-            match self.search_api.get_artist_discography(&artist_id).await {
+            match self.network_client.get_artist_discography(artist_id).await {
                 Ok((artist, albums)) => {
                     // Check if we got valid artist information
                     if artist.name != "Unknown Artist" && !albums.is_empty() {
@@ -1816,7 +1385,11 @@ impl TuiApp {
 
         // If direct approach failed, search for the artist first to get proper ID
         info!("Searching for artist '{}' to get proper ID", track.artist);
-        match self.search_api.search(&track.artist, "artist", 10).await {
+        match self
+            .network_client
+            .search(track.artist.clone(), "artist".to_string(), 10)
+            .await
+        {
             Ok(search_result) => {
                 // Find the best matching artist from the flat results array
                 for item in search_result.get_results() {
@@ -1827,7 +1400,11 @@ impl TuiApp {
                                 artist.name, artist.id
                             );
 
-                            match self.search_api.get_artist_discography(&artist.id).await {
+                            match self
+                                .network_client
+                                .get_artist_discography(artist.id.clone())
+                                .await
+                            {
                                 Ok((detailed_artist, albums)) => {
                                     let album_count = albums.len();
                                     self.detailed_artist = Some(detailed_artist);
@@ -1882,14 +1459,16 @@ impl TuiApp {
                 }
             }
 
-            // For regular tracks, check if we can find the album ID in search results
-            // Look for corresponding album in search results by matching artist and album name
-            for search_track in &self.search_results {
-                if search_track.title.starts_with("[Album]")
-                    && search_track.artist == track.artist
-                    && search_track.album == track.album
-                {
-                    return Some(search_track.id.clone());
+            // For regular tracks, check if we can find the album ID in main list items
+            // Look for corresponding album in current list by matching artist and album name
+            for item in &self.main_list.items {
+                if let Some(search_track) = item.get_track() {
+                    if search_track.title.starts_with("[Album]")
+                        && search_track.artist == track.artist
+                        && search_track.album == track.album
+                    {
+                        return Some(search_track.id.clone());
+                    }
                 }
             }
 
@@ -1922,16 +1501,19 @@ impl TuiApp {
                 }
             }
 
-            // For regular tracks, check if we can find the artist ID in search results
-            // Look for corresponding artist in search results by matching artist name
-            for search_track in &self.search_results {
-                if search_track.title.starts_with("[Artist]") && search_track.artist == track.artist
-                {
-                    info!(
-                        "Found artist ID in search results: {} for artist '{}'",
-                        search_track.id, track.artist
-                    );
-                    return Some(search_track.id.clone());
+            // For regular tracks, check if we can find the artist ID in main list items
+            // Look for corresponding artist in current list by matching artist name
+            for item in &self.main_list.items {
+                if let Some(search_track) = item.get_track() {
+                    if search_track.title.starts_with("[Artist]")
+                        && search_track.artist == track.artist
+                    {
+                        info!(
+                            "Found artist ID in main list: {} for artist '{}'",
+                            search_track.id, track.artist
+                        );
+                        return Some(search_track.id.clone());
+                    }
                 }
             }
 
@@ -1943,5 +1525,42 @@ impl TuiApp {
             );
             None
         }
+    }
+
+    pub async fn show_album_detail_by_id(&mut self, album_id: &str) -> DabResult<()> {
+        self.status_message = Some(format!("Loading album details..."));
+
+        match self.network_client.get_album(album_id.to_string()).await {
+            Ok(album) => {
+                self.detailed_album = Some(album);
+                self.switch_view(View::DetailedAlbum).await;
+                self.status_message = Some("Album details loaded".to_string());
+            }
+            Err(e) => {
+                self.status_message = Some(format!("Failed to load album: {}", e));
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn show_artist_discography_by_id(&mut self, artist_id: &str) -> DabResult<()> {
+        self.status_message = Some(format!("Loading artist discography..."));
+
+        match self
+            .network_client
+            .get_artist_discography(artist_id.to_string())
+            .await
+        {
+            Ok((artist, albums)) => {
+                self.detailed_artist = Some(artist);
+                self.artist_albums = albums;
+                self.switch_view(View::ArtistDiscography).await;
+                self.status_message = Some("Artist discography loaded".to_string());
+            }
+            Err(e) => {
+                self.status_message = Some(format!("Failed to load artist discography: {}", e));
+            }
+        }
+        Ok(())
     }
 }
