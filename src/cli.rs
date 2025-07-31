@@ -202,8 +202,11 @@ impl Cli {
                                         eprintln!("   Duration: {}:{:02}", minutes, seconds);
                                     }
 
-                                    if !track.url.is_empty() {
-                                        eprintln!("   Stream URL: {}", track.url);
+                                    // Show track metadata for online sources
+                                    if track.requires_stream_url() {
+                                        eprintln!("   Track ID: {}", track.track_id.as_ref().unwrap_or(&"Unknown".to_string()));
+                                    } else if track.is_local() {
+                                        eprintln!("   Local file: {}", track.local_path.as_ref().unwrap_or(&"Unknown".to_string()));
                                     }
 
                                     if let Some(cover_url) = &track.cover_url {

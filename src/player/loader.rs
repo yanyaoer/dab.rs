@@ -33,21 +33,31 @@ impl AudioLoader {
         }
 
         // Check if it's a local file
-        if track.url.starts_with('/') || track.url.starts_with("file://") {
-            let path = track.url.strip_prefix("file://").unwrap_or(&track.url);
+        let track_url = if track.is_local() {
+            track.local_path.as_ref().unwrap()
+        } else {
+            // This shouldn't happen since PlayerEngine now handles URL fetching
+            return Err(DabError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Track missing URL - PlayerEngine should have resolved this"
+            )));
+        };
+        
+        if track_url.starts_with('/') || track_url.starts_with("file://") {
+            let path = track_url.strip_prefix("file://").unwrap_or(track_url);
             info!("Loading local track: {}", path);
             return Ok(Box::new(std::fs::File::open(path)?));
         }
 
         // For remote files, we need to download first to enable seeking
-        info!("Downloading track for seekable access: {}", track.url);
-        self.download_and_cache_track(track).await
+        info!("Downloading track for seekable access: {}", track_url);
+        self.download_and_cache_track_url(track, track_url).await
     }
 
-    async fn download_and_cache_track(&self, track: &Track) -> DabResult<Box<dyn ReadSeek>> {
+    async fn download_and_cache_track_url(&self, track: &Track, url: &str) -> DabResult<Box<dyn ReadSeek>> {
         let response = self
             .http_client
-            .get(&track.url)
+            .get(url)
             .send()
             .await?
             .error_for_status()?;
@@ -83,7 +93,7 @@ impl AudioLoader {
             .cache
             .write()
             .await
-            .store_track_with_url(&track.id, temp_file.path(), &track.url)
+            .store_track_with_url(&track.id, temp_file.path(), url)
             .await?;
         info!("Track cached at: {}", cache_path.display());
 
@@ -98,7 +108,18 @@ impl AudioLoader {
         }
 
         info!("Preloading track: {}", track.title);
-        let _ = self.download_and_cache_track(track).await?;
+        
+        // For preloading, we can't get the URL without the PlayerEngine's help
+        // This method is now primarily for cache checks
+        if track.is_local() {
+            // For local tracks, we can preload
+            if let Some(local_path) = &track.local_path {
+                let _ = self.download_and_cache_track_url(track, local_path).await?;
+            }
+        } else {
+            debug!("Cannot preload online track {} without stream URL", track.id);
+        }
+        
         Ok(())
     }
 }

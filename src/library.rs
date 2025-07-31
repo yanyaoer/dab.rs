@@ -145,9 +145,11 @@ impl Library {
                         artist: meta.artist.clone(),
                         album: meta.album.clone(),
                         duration_ms: meta.duration_ms.unwrap_or(0),
-                        url: format!("file://{}", meta.file_path),
-                        local_path: Some(meta.file_path.clone()),
+                        local_path: Some(format!("file://{}", meta.file_path)),
                         cover_url: None,
+                        track_id: None,
+                        artist_id: None,
+                        album_id: None,
                     })
                 })
                 .collect()
@@ -173,9 +175,11 @@ impl Library {
                 artist: meta.artist.clone(),
                 album: meta.album.clone(),
                 duration_ms: meta.duration_ms.unwrap_or(0),
-                url: format!("file://{}", meta.file_path),
-                local_path: Some(meta.file_path.clone()),
+                local_path: Some(format!("file://{}", meta.file_path)),
                 cover_url: None,
+                track_id: None,
+                artist_id: None,
+                album_id: None,
             })
             .collect()
     }

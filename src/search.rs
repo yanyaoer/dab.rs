@@ -309,16 +309,18 @@ pub struct StreamResponse {
 impl From<DabTrack> for Track {
     fn from(dab_track: DabTrack) -> Self {
         Track {
-            id: dab_track.id,
+            id: dab_track.id.clone(),
             title: dab_track.title,
             artist: dab_track.artist,
             album: dab_track
                 .album_title
                 .unwrap_or_else(|| "Unknown Album".to_string()),
-            url: String::new(), // This will be filled when needed for playback
             duration_ms: dab_track.duration.map(|s| s * 1000).unwrap_or(0),
             local_path: None,
             cover_url: dab_track.album_cover,
+            track_id: Some(dab_track.id),
+            artist_id: dab_track.artist_id,
+            album_id: dab_track.album_id,
         }
     }
 }
@@ -670,18 +672,7 @@ impl DabMusicApi {
                     let mut track: Track = dab_track.clone().into();
 
                     // Only check cache, don't fetch stream URL during search
-                    if let Some(cache) = cache {
-                        if let Ok(Some(cached_url)) = cache.get_cached_url(&dab_track.id).await {
-                            if !cached_url.is_empty() {
-                                debug!(
-                                    "Using cached URL for track {}: {}",
-                                    dab_track.id, cached_url
-                                );
-                                track.url = cached_url;
-                            }
-                        }
-                    }
-
+                    // Cache checking now handled by PlayerEngine during playback
                     tracks.push(track);
                 }
                 _ => {

@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc, RwLock};
 use log::{debug, info};
 
@@ -11,9 +12,40 @@ pub struct Track {
     pub artist: String,
     pub album: String,
     pub duration_ms: u32,
-    pub url: String,
     pub local_path: Option<String>,
     pub cover_url: Option<String>,
+    // Track metadata for online sources
+    pub track_id: Option<String>,  // Original track ID from API
+    pub artist_id: Option<String>,
+    pub album_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StreamUrl {
+    pub url: String,
+    pub expires_at: u64, // Unix timestamp
+}
+
+impl StreamUrl {
+    pub fn new(url: String, expires_in_seconds: Option<u64>) -> Self {
+        let expires_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() + expires_in_seconds.unwrap_or(3600); // Default 1 hour
+        
+        Self { url, expires_at }
+    }
+    
+    pub fn is_expired(&self) -> bool {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() > self.expires_at
+    }
+    
+    pub fn is_local(&self) -> bool {
+        self.url.starts_with("file://") || self.url.starts_with("/")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -59,10 +91,39 @@ impl Track {
             artist: "Unknown Artist".to_string(),
             album: "Unknown Album".to_string(),
             duration_ms: 0,
-            url: url.to_string(),
-            local_path: None,
+            local_path: if url.starts_with("file://") || url.starts_with("/") {
+                Some(url.to_string())
+            } else {
+                None
+            },
             cover_url: None,
+            track_id: None,
+            artist_id: None,
+            album_id: None,
         }
+    }
+    
+    pub fn from_dab_track(dab_track: &crate::search::DabTrack) -> Self {
+        Self {
+            id: dab_track.id.clone(),
+            title: dab_track.title.clone(),
+            artist: dab_track.artist.clone(),
+            album: dab_track.album_title.as_ref().unwrap_or(&"Unknown Album".to_string()).clone(),
+            duration_ms: dab_track.duration.map(|s| s * 1000).unwrap_or(0),
+            local_path: None,
+            cover_url: dab_track.album_cover.clone(),
+            track_id: Some(dab_track.id.clone()),
+            artist_id: dab_track.artist_id.clone(),
+            album_id: dab_track.album_id.clone(),
+        }
+    }
+    
+    pub fn is_local(&self) -> bool {
+        self.local_path.is_some()
+    }
+    
+    pub fn requires_stream_url(&self) -> bool {
+        !self.is_local() && self.track_id.is_some()
     }
 
     fn extract_title_from_url(url: &str) -> String {

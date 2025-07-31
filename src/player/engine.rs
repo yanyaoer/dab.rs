@@ -6,14 +6,18 @@ use tokio::sync::{mpsc, oneshot, RwLock};
 use super::decoder::AudioDecoder;
 use super::loader::AudioLoader;
 use super::sink::AudioSink;
-use super::{PlayerCommand, PlayerEvent, PlayerState, PlayerStatus, Queue, Track, QueueEvent};
+use super::queue::StreamUrl;
+use super::{PlayerCommand, PlayerEvent, PlayerState, PlayerStatus, Queue, Track};
 use crate::cache::Cache;
 use crate::error::{DabError, DabResult};
+use crate::search::MusicSearchApi;
 
 pub struct PlayerEngine {
     command_tx: mpsc::UnboundedSender<PlayerCommand>,
     event_rx: Arc<RwLock<mpsc::UnboundedReceiver<PlayerEvent>>>,
     queue: Arc<Queue>,
+    search_api: Arc<MusicSearchApi>,
+    stream_url_cache: Arc<RwLock<std::collections::HashMap<String, StreamUrl>>>,
     _handle: tokio::task::JoinHandle<()>,
 }
 
@@ -62,6 +66,8 @@ impl PlayerEngine {
             command_tx,
             event_rx: Arc::new(RwLock::new(event_rx)),
             queue,
+            search_api: Arc::new(MusicSearchApi::new()),
+            stream_url_cache: Arc::new(RwLock::new(std::collections::HashMap::new())),
             _handle: handle,
         })
     }
@@ -77,6 +83,9 @@ impl PlayerEngine {
         loader: AudioLoader,
         audio_sink: Arc<RwLock<AudioSink>>,
     ) {
+        let search_api = Arc::new(MusicSearchApi::new());
+        let stream_url_cache = Arc::new(RwLock::new(std::collections::HashMap::<String, StreamUrl>::new()));
+        
         info!("Player engine started");
 
         while let Some(command) = command_rx.recv().await {
@@ -90,6 +99,8 @@ impl PlayerEngine {
                 &queue,
                 &loader,
                 &audio_sink,
+                &search_api,
+                &stream_url_cache,
             )
             .await
             {
@@ -111,13 +122,24 @@ impl PlayerEngine {
         queue: &Arc<Queue>,
         loader: &AudioLoader,
         audio_sink: &Arc<RwLock<AudioSink>>,
+        search_api: &Arc<MusicSearchApi>,
+        stream_url_cache: &Arc<RwLock<std::collections::HashMap<String, StreamUrl>>>,
     ) -> DabResult<()> {
         debug!("Handling command: {:?}", command);
 
         match command {
-            PlayerCommand::LoadAndPlay(track_id) => {
-                Self::load_and_play_track(
-                    &track_id,
+            PlayerCommand::LoadAndPlay(track_identifier) => {
+                // Try to find the track in the queue first
+                let queue_tracks = queue.get_queue().await;
+                let track = if let Some(found_track) = queue_tracks.iter().find(|t| t.id == track_identifier || t.local_path.as_ref() == Some(&track_identifier)) {
+                    found_track.clone()
+                } else {
+                    // Fallback: create track from URL for backwards compatibility
+                    Track::from_url(&track_identifier)
+                };
+                
+                Self::load_and_play_track_internal(
+                    &track,
                     event_tx,
                     state,
                     current_track,
@@ -126,6 +148,24 @@ impl PlayerEngine {
                     queue,
                     loader,
                     audio_sink,
+                    search_api,
+                    stream_url_cache,
+                )
+                .await?;
+            }
+            PlayerCommand::LoadAndPlayTrack(track) => {
+                Self::load_and_play_track_internal(
+                    &track,
+                    event_tx,
+                    state,
+                    current_track,
+                    position_ms,
+                    volume,
+                    queue,
+                    loader,
+                    audio_sink,
+                    search_api,
+                    stream_url_cache,
                 )
                 .await?;
             }
@@ -139,8 +179,8 @@ impl PlayerEngine {
                     }
                     PlayerState::Stopped => {
                         if let Some(track) = queue.next_track().await {
-                            Self::load_and_play_track(
-                                &track.url,
+                            Self::load_and_play_track_internal(
+                                &track,
                                 event_tx,
                                 state,
                                 current_track,
@@ -149,6 +189,8 @@ impl PlayerEngine {
                                 queue,
                                 loader,
                                 audio_sink,
+                                search_api,
+                                stream_url_cache,
                             )
                             .await?;
                         }
@@ -179,8 +221,8 @@ impl PlayerEngine {
             }
             PlayerCommand::Next => {
                 if let Some(track) = queue.next_track().await {
-                    Self::load_and_play_track(
-                        &track.url,
+                    Self::load_and_play_track_internal(
+                        &track,
                         event_tx,
                         state,
                         current_track,
@@ -189,6 +231,8 @@ impl PlayerEngine {
                         queue,
                         loader,
                         audio_sink,
+                        search_api,
+                        stream_url_cache,
                     )
                     .await?;
                 } else {
@@ -199,8 +243,8 @@ impl PlayerEngine {
             }
             PlayerCommand::Previous => {
                 if let Some(track) = queue.previous_track().await {
-                    Self::load_and_play_track(
-                        &track.url,
+                    Self::load_and_play_track_internal(
+                        &track,
                         event_tx,
                         state,
                         current_track,
@@ -209,6 +253,8 @@ impl PlayerEngine {
                         queue,
                         loader,
                         audio_sink,
+                        search_api,
+                        stream_url_cache,
                     )
                     .await?;
                 } else {
@@ -221,34 +267,57 @@ impl PlayerEngine {
                 *position_ms.write().await = pos;
                 let _ = event_tx.send(PlayerEvent::PositionChanged(pos));
             }
-            PlayerCommand::AddToQueue(url) => {
-                let track = Track::from_url(&url);
-                queue.add_track(track).await;
+            PlayerCommand::AddToQueue(track_identifier) => {
+                // Try to resolve track from identifier - could be URL, track ID, or local path
+                let track = Self::resolve_track_from_identifier(&track_identifier, search_api).await
+                    .unwrap_or_else(|_| Track::from_url(&track_identifier));
+                
+                queue.add_track(track.clone()).await;
                 let _ = event_tx.send(PlayerEvent::QueueChanged);
 
                 // Start preloading in background
                 let loader = loader.clone();
-                let track_clone = Track::from_url(&url);
                 tokio::spawn(async move {
-                    if let Err(e) = loader.preload_track(&track_clone).await {
+                    if let Err(e) = loader.preload_track(&track).await {
                         warn!("Failed to preload track: {}", e);
                     }
                 });
             }
-            PlayerCommand::AddNext(url) => {
-                let track = Track::from_url(&url);
+            PlayerCommand::AddTrackToQueue(track) => {
+                queue.add_track(track.clone()).await;
+                let _ = event_tx.send(PlayerEvent::QueueChanged);
+
+                // Start preloading in background
+                let loader = loader.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = loader.preload_track(&track).await {
+                        warn!("Failed to preload track: {}", e);
+                    }
+                });
+            }
+            PlayerCommand::AddNext(track_identifier) => {
+                // Try to resolve track from identifier
+                let track = Self::resolve_track_from_identifier(&track_identifier, search_api).await
+                    .unwrap_or_else(|_| Track::from_url(&track_identifier));
+                
                 queue.add_track_next(track).await;
                 let _ = event_tx.send(PlayerEvent::QueueChanged);
             }
-            PlayerCommand::ClearAndPlay(urls) => {
+            PlayerCommand::AddTrackNext(track) => {
+                queue.add_track_next(track).await;
+                let _ = event_tx.send(PlayerEvent::QueueChanged);
+            }
+            PlayerCommand::ClearAndPlay(track_identifiers) => {
                 queue.clear().await;
-                for url in urls {
-                    let track = Track::from_url(&url);
+                for identifier in track_identifiers {
+                    // Try to resolve each track from identifier
+                    let track = Self::resolve_track_from_identifier(&identifier, search_api).await
+                        .unwrap_or_else(|_| Track::from_url(&identifier));
                     queue.add_track(track).await;
                 }
                 if let Some(track) = queue.next_track().await {
-                    Self::load_and_play_track(
-                        &track.url,
+                    Self::load_and_play_track_internal(
+                        &track,
                         event_tx,
                         state,
                         current_track,
@@ -257,6 +326,31 @@ impl PlayerEngine {
                         queue,
                         loader,
                         audio_sink,
+                        search_api,
+                        stream_url_cache,
+                    )
+                    .await?;
+                }
+                let _ = event_tx.send(PlayerEvent::QueueChanged);
+            }
+            PlayerCommand::ClearAndPlayTracks(tracks) => {
+                queue.clear().await;
+                for track in tracks {
+                    queue.add_track(track).await;
+                }
+                if let Some(track) = queue.next_track().await {
+                    Self::load_and_play_track_internal(
+                        &track,
+                        event_tx,
+                        state,
+                        current_track,
+                        position_ms,
+                        volume,
+                        queue,
+                        loader,
+                        audio_sink,
+                        search_api,
+                        stream_url_cache,
                     )
                     .await?;
                 }
@@ -284,8 +378,8 @@ impl PlayerEngine {
         Ok(())
     }
 
-    async fn load_and_play_track(
-        track_id: &str,
+    async fn load_and_play_track_internal(
+        track: &Track,
         event_tx: &mpsc::UnboundedSender<PlayerEvent>,
         state: &Arc<RwLock<PlayerState>>,
         current_track: &Arc<RwLock<Option<Track>>>,
@@ -294,20 +388,27 @@ impl PlayerEngine {
         queue: &Arc<Queue>,
         loader: &AudioLoader,
         audio_sink: &Arc<RwLock<AudioSink>>,
+        search_api: &Arc<MusicSearchApi>,
+        stream_url_cache: &Arc<RwLock<std::collections::HashMap<String, StreamUrl>>>,
     ) -> DabResult<()> {
         *state.write().await = PlayerState::Loading;
         let _ = event_tx.send(PlayerEvent::StateChanged(PlayerState::Loading));
 
-        // For now, treat track_id as URL
-        let track = Track::from_url(track_id);
-
-        // Add to queue if not already there
-        queue.add_track(track.clone()).await;
-
         info!("Loading track: {}", track.title);
 
-        // Load the audio file
-        let audio_source = loader.load_track_seekable(&track).await?;
+        // Get stream URL for the track
+        let stream_url = Self::get_stream_url(track, search_api, stream_url_cache).await?;
+
+        // Create a temporary track with the stream URL for loading
+        let mut track_with_url = track.clone();
+        if track.is_local() {
+            // For local tracks, use the local_path as URL
+            track_with_url.local_path = Some(stream_url.clone());
+        }
+
+        // Load the audio file using the stream URL
+        let track_for_loading = Track::from_url(&stream_url);
+        let audio_source = loader.load_track_seekable(&track_for_loading).await?;
 
         // Create decoder
         let decoder = AudioDecoder::from_seekable(audio_source)?;
@@ -321,11 +422,11 @@ impl PlayerEngine {
         // Start playback
         audio_sink.write().await.play(decoder, volume_value)?;
 
-        // Update current track
+        // Update current track with original track metadata (not the URL-based track)
         *current_track.write().await = Some(track.clone());
         *position_ms.write().await = 0;
 
-        let _ = event_tx.send(PlayerEvent::TrackChanged(track));
+        let _ = event_tx.send(PlayerEvent::TrackChanged(track.clone()));
 
         // Start playing
         *state.write().await = PlayerState::Playing;
@@ -334,9 +435,14 @@ impl PlayerEngine {
         Ok(())
     }
 
-    pub async fn load_and_play(&mut self, track_id: &str) -> DabResult<()> {
-        self.send_command(PlayerCommand::LoadAndPlay(track_id.to_string()))
+    pub async fn load_and_play(&mut self, track_or_url: &str) -> DabResult<()> {
+        // For backwards compatibility, treat input as URL
+        self.send_command(PlayerCommand::LoadAndPlay(track_or_url.to_string()))
             .await
+    }
+
+    pub async fn load_and_play_track(&mut self, track: Track) -> DabResult<()> {
+        self.send_command(PlayerCommand::LoadAndPlayTrack(track)).await
     }
 
     pub async fn play(&mut self) -> DabResult<()> {
@@ -368,13 +474,25 @@ impl PlayerEngine {
             .await
     }
 
+    pub async fn add_track_to_queue(&mut self, track: Track) -> DabResult<()> {
+        self.send_command(PlayerCommand::AddTrackToQueue(track)).await
+    }
+
     pub async fn add_next(&mut self, url: &str) -> DabResult<()> {
         self.send_command(PlayerCommand::AddNext(url.to_string()))
             .await
     }
 
+    pub async fn add_track_next(&mut self, track: Track) -> DabResult<()> {
+        self.send_command(PlayerCommand::AddTrackNext(track)).await
+    }
+
     pub async fn clear_and_play(&mut self, urls: Vec<String>) -> DabResult<()> {
         self.send_command(PlayerCommand::ClearAndPlay(urls)).await
+    }
+
+    pub async fn clear_and_play_tracks(&mut self, tracks: Vec<Track>) -> DabResult<()> {
+        self.send_command(PlayerCommand::ClearAndPlayTracks(tracks)).await
     }
 
     pub async fn get_status(&mut self) -> DabResult<PlayerStatus> {
@@ -403,5 +521,78 @@ impl PlayerEngine {
     
     pub fn get_queue(&self) -> Arc<Queue> {
         self.queue.clone()
+    }
+
+    /// Get or fetch stream URL for a track
+    async fn get_stream_url(
+        track: &Track,
+        search_api: &Arc<MusicSearchApi>,
+        stream_url_cache: &Arc<RwLock<std::collections::HashMap<String, StreamUrl>>>,
+    ) -> DabResult<String> {
+        // If it's a local track, return the local path
+        if track.is_local() {
+            return Ok(track.local_path.as_ref().unwrap().clone());
+        }
+
+        // Check if we have a cached stream URL that's not expired
+        {
+            let cache = stream_url_cache.read().await;
+            if let Some(stream_url) = cache.get(&track.id) {
+                if !stream_url.is_expired() {
+                    return Ok(stream_url.url.clone());
+                }
+            }
+        }
+
+        // If track doesn't require stream URL fetching, return error
+        if !track.requires_stream_url() {
+            return Err(DabError::Player(format!(
+                "Track {} requires stream URL but no track_id available",
+                track.title
+            )));
+        }
+
+        // Fetch new stream URL from API
+        let track_id = track.track_id.as_ref().unwrap();
+        let stream_url_string = search_api.get_stream_url(track_id, None).await?;
+
+        // Cache the new URL with default expiration (1 hour)
+        let stream_url = StreamUrl::new(stream_url_string.clone(), None);
+        {
+            let mut cache = stream_url_cache.write().await;
+            cache.insert(track.id.clone(), stream_url);
+        }
+
+        Ok(stream_url_string)
+    }
+
+    /// Resolve a track from an identifier (could be track ID, URL, or local path)
+    async fn resolve_track_from_identifier(
+        identifier: &str,
+        search_api: &Arc<MusicSearchApi>,
+    ) -> DabResult<Track> {
+        // If it looks like a local path or URL, create track from URL
+        if identifier.starts_with("/") || identifier.starts_with("file://") || identifier.starts_with("http") {
+            return Ok(Track::from_url(identifier));
+        }
+
+        // Otherwise, try to search for the track by ID
+        // First try searching for track by title/artist if the identifier looks like metadata
+        if identifier.contains(" - ") {
+            let parts: Vec<&str> = identifier.splitn(2, " - ").collect();
+            if parts.len() == 2 {
+                let query = format!("{} {}", parts[0], parts[1]);
+                if let Ok(search_result) = search_api.search(&query, "track", 1).await {
+                    if let Some(first_result) = search_result.get_results().first() {
+                        if let crate::search::SearchResultItem::Track(dab_track) = first_result {
+                            return Ok(Track::from_dab_track(dab_track));
+                        }
+                    }
+                }
+            }
+        }
+
+        // If all else fails, treat as URL
+        Ok(Track::from_url(identifier))
     }
 }

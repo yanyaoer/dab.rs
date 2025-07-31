@@ -22,8 +22,8 @@ You run in an environment where ast-grep is available; whenever a search require
     - 支持流式加载本地和在线音频文件, 一边加载一边播放
     - 使用 tokio channel 作为通信机制, 确保播放服务为异步非阻塞模式运行, 与 ui 或者命令行交互时及时响应
     - 支持 dab play/pause/next/prev 等命令操作播放服务
-    - 支持 dab queue 'https://collie.fouland.com/audio/love_papa.mp3'
-      添加本地文件和在线文件到播放列表
+    - 支持 dab queue 'https://collie.fouland.com/audio/love_papa.mp3' 添加本地文件和在线文件到播放列表
+    - stream url 有过期时间导致后续无法播放, 在播放列表应使用 track 信息记录和展示，进行播放或者预加载时再去请求 stream url 并支持流式播放
 
 - 支持本地文件缓存, 优先读取和播放本地音频文件
     - 缓存音频文件时, 将歌曲的id3相关信息以及唯一id等记录到 metadata, 用于在线查询或者专辑详情页的缓存状态判断

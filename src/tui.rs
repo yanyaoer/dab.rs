@@ -257,8 +257,8 @@ impl TuiApp {
                 .iter()
                 .enumerate()
                 .map(|(i, track)| {
-                    let cached_indicator = if !track.url.is_empty() {
-                        " [cached]"
+                    let cached_indicator = if track.is_local() {
+                        " [local]"
                     } else {
                         ""
                     };
@@ -320,8 +320,8 @@ impl TuiApp {
                     let is_current = self.current_queue_index == Some(i);
                     let prefix = if is_current { "▶ " } else { "  " };
                     
-                    let cached_indicator = if !track.url.is_empty() {
-                        " [cached]"
+                    let cached_indicator = if track.is_local() {
+                        " [local]"
                     } else {
                         ""
                     };
@@ -335,6 +335,8 @@ impl TuiApp {
                     ListItem::new(Line::from(vec![
                         Span::styled(format!("{}{}. ", prefix, i + 1), Style::default().fg(Color::Gray)),
                         Span::styled(&track.title, style),
+                        Span::raw(" - "),
+                        Span::styled(&track.album, Style::default().fg(Color::Blue)),
                         Span::raw(" - "),
                         Span::styled(&track.artist, Style::default().fg(Color::Yellow)),
                         Span::styled(cached_indicator, Style::default().fg(Color::Green)),
@@ -406,8 +408,8 @@ impl TuiApp {
                 .iter()
                 .enumerate()
                 .map(|(i, track)| {
-                    let cached_indicator = if !track.url.is_empty() {
-                        " [cached]"
+                    let cached_indicator = if track.is_local() {
+                        " [local]"
                     } else {
                         ""
                     };
@@ -715,10 +717,12 @@ impl TuiApp {
                                 title: "temp".to_string(),
                                 artist: album.artist.clone(),
                                 album: album.title.clone(),
-                                url: String::new(),
                                 duration_ms: 0,
                                 local_path: None,
                                 cover_url: None,
+                                track_id: None,
+                                artist_id: None,
+                                album_id: None,
                             };
                             self.show_artist_discography(&fake_track).await?;
                         }
@@ -759,7 +763,8 @@ impl TuiApp {
                             let queue = self.player.get_queue();
                             let _ = queue.send_command(crate::player::QueueCommand::JumpTo(selected_index)).await;
                             if let Some(track) = self.queue_tracks.get(selected_index) {
-                                self.player.load_and_play(&track.url).await?;
+                                // Load and play using complete track object
+                                self.player.load_and_play_track(track.clone()).await?;
                                 self.status_message = Some(format!("Playing: {}", track.title));
                             }
                         }
@@ -795,7 +800,8 @@ impl TuiApp {
                         ) {
                             let tracks = self.library.get_tracks_by_album(&album.title);
                             if let Some(track) = tracks.get(selected_index) {
-                                self.player.add_next(&track.url).await?;
+                                // Pass the complete track object instead of just an identifier
+                                self.player.add_track_next(track.clone()).await?;
                                 self.status_message =
                                     Some(format!("Added {} to queue next", track.title));
                             }
@@ -805,21 +811,8 @@ impl TuiApp {
                         // Add track from detailed album view
                         if let Some(selected_index) = self.album_detail_state.selected() {
                             if let Some(track) = self.tracks.get(selected_index) {
-                                // Get stream URL if needed
-                                let stream_url = if track.url.is_empty() {
-                                    match self.search_api.get_track_stream_url(track, None).await {
-                                        Ok(url) => url,
-                                        Err(e) => {
-                                            self.status_message =
-                                                Some(format!("Failed to get stream URL: {}", e));
-                                            return Ok(());
-                                        }
-                                    }
-                                } else {
-                                    track.url.clone()
-                                };
-
-                                self.player.add_next(&stream_url).await?;
+                                // Pass the complete track object
+                                self.player.add_track_next(track.clone()).await?;
                                 self.status_message =
                                     Some(format!("Added {} to queue next", track.title));
                             }
@@ -829,21 +822,8 @@ impl TuiApp {
                         // Add track from search results
                         if let Some(selected_index) = self.list_state.selected() {
                             if let Some(track) = self.search_results.get(selected_index).cloned() {
-                                // Get stream URL if needed
-                                let stream_url = if track.url.is_empty() {
-                                    match self.search_api.get_track_stream_url(&track, None).await {
-                                        Ok(url) => url,
-                                        Err(e) => {
-                                            self.status_message =
-                                                Some(format!("Failed to get stream URL: {}", e));
-                                            return Ok(());
-                                        }
-                                    }
-                                } else {
-                                    track.url.clone()
-                                };
-
-                                self.player.add_next(&stream_url).await?;
+                                // Pass the complete track object
+                                self.player.add_track_next(track.clone()).await?;
                                 self.status_message =
                                     Some(format!("Added {} to queue next", track.title));
                             }
@@ -857,8 +837,8 @@ impl TuiApp {
                     View::AlbumDetail => {
                         if let Some(album) = self.selected_album.as_ref() {
                             let tracks = self.library.get_tracks_by_album(&album.title);
-                            let urls = tracks.iter().map(|t| t.url.clone()).collect();
-                            self.player.clear_and_play(urls).await?;
+                            // Convert to track objects and pass them directly
+                            self.player.clear_and_play_tracks(tracks).await?;
                             self.status_message = Some(format!(
                                 "Cleared queue and added all tracks from {}",
                                 album.title
@@ -869,26 +849,12 @@ impl TuiApp {
                         // Clear queue and add all tracks from detailed album
                         if let Some(album) = &self.detailed_album {
                             if let Some(tracks) = &album.tracks {
-                                self.status_message =
-                                    Some("Getting stream URLs for all tracks...".to_string());
+                                // Convert DabTrack to Track objects
+                                let track_objects: Vec<Track> = tracks.iter()
+                                    .map(|dab_track| Track::from_dab_track(dab_track))
+                                    .collect();
 
-                                let mut stream_urls = Vec::new();
-                                for dab_track in tracks {
-                                    // Get stream URL for each track
-                                    match self.search_api.get_stream_url(&dab_track.id, None).await
-                                    {
-                                        Ok(url) => stream_urls.push(url),
-                                        Err(e) => {
-                                            self.status_message = Some(format!(
-                                                "Failed to get stream URL for {}: {}",
-                                                dab_track.title, e
-                                            ));
-                                            return Ok(());
-                                        }
-                                    }
-                                }
-
-                                self.player.clear_and_play(stream_urls).await?;
+                                self.player.clear_and_play_tracks(track_objects).await?;
                                 self.status_message = Some(format!(
                                     "Cleared queue and added all {} tracks from {}",
                                     tracks.len(),
@@ -899,39 +865,18 @@ impl TuiApp {
                     }
                     View::Search => {
                         // Clear queue and add all search results (only tracks, not albums/artists)
-                        let track_results: Vec<_> = self
+                        let track_results: Vec<Track> = self
                             .search_results
                             .iter()
                             .filter(|track| {
                                 !track.title.starts_with("[Album]")
                                     && !track.title.starts_with("[Artist]")
                             })
+                            .cloned()
                             .collect();
 
                         if !track_results.is_empty() {
-                            self.status_message =
-                                Some("Getting stream URLs for all tracks...".to_string());
-
-                            let mut stream_urls = Vec::new();
-                            for track in &track_results {
-                                let stream_url = if track.url.is_empty() {
-                                    match self.search_api.get_track_stream_url(track, None).await {
-                                        Ok(url) => url,
-                                        Err(e) => {
-                                            self.status_message = Some(format!(
-                                                "Failed to get stream URL for {}: {}",
-                                                track.title, e
-                                            ));
-                                            return Ok(());
-                                        }
-                                    }
-                                } else {
-                                    track.url.clone()
-                                };
-                                stream_urls.push(stream_url);
-                            }
-
-                            self.player.clear_and_play(stream_urls).await?;
+                            self.player.clear_and_play_tracks(track_results.clone()).await?;
                             self.status_message = Some(format!(
                                 "Cleared queue and added {} tracks from search results",
                                 track_results.len()
@@ -1127,9 +1072,11 @@ impl TuiApp {
                         artist: album.artist.clone(),
                         album: album.title.clone(),
                         duration_ms: 0,
-                        url: String::new(), // Albums don't have a direct URL
                         local_path: None,
                         cover_url: None,
+                        track_id: None,
+                        artist_id: None,
+                        album_id: None,
                     })
                     .collect()
             }
@@ -1164,9 +1111,11 @@ impl TuiApp {
                                     .unwrap_or(&album.title)
                                     .clone(),
                                 duration_ms: dab_track.duration.map(|s| s * 1000).unwrap_or(0),
-                                url: String::new(), // Will be filled when needed for playback
                                 local_path: None,
                                 cover_url: dab_track.album_cover.clone(),
+                                track_id: Some(dab_track.id.clone()),
+                                artist_id: dab_track.artist_id.clone(),
+                                album_id: dab_track.album_id.clone(),
                             })
                             .collect()
                     } else {
@@ -1186,9 +1135,11 @@ impl TuiApp {
                         artist: album.artist.clone(),
                         album: album.title.clone(),
                         duration_ms: album.duration.map(|s| s * 1000).unwrap_or(0),
-                        url: String::new(),
                         local_path: None,
                         cover_url: album.cover.clone(),
+                        track_id: None,
+                        artist_id: None,
+                        album_id: Some(album.id.clone()),
                     })
                     .collect()
             }
@@ -1219,16 +1170,9 @@ impl TuiApp {
                 for item in search_result.get_results() {
                     match item {
                         crate::search::SearchResultItem::Track(dab_track) => {
-                            let mut track: Track = dab_track.clone().into();
+                            let track: Track = dab_track.clone().into();
 
-                            // Check cache for existing URL
-                            if let Ok(Some(cached_url)) = cache.get_cached_url(&dab_track.id).await
-                            {
-                                if !cached_url.is_empty() {
-                                    track.url = cached_url;
-                                }
-                            }
-
+                            // Cache checking now handled by PlayerEngine during playback
                             tracks.push(track);
                             raw_tracks.push(dab_track);
                         }
@@ -1264,10 +1208,12 @@ impl TuiApp {
                                 title: format!("[Album] {}", album.title),
                                 artist: album.artist,
                                 album: album.title.clone(),
-                                url: String::new(),
                                 duration_ms: album.duration.map(|s| s * 1000).unwrap_or(0),
                                 local_path: None,
                                 cover_url: album.cover,
+                                track_id: None,
+                                artist_id: None,
+                                album_id: Some(album.id.clone()),
                             });
                         }
                         crate::search::SearchResultItem::Track(track) => {
@@ -1281,14 +1227,16 @@ impl TuiApp {
 
                             if album_keys.insert(album_key.clone()) {
                                 tracks.push(Track {
-                                    id: track.album_id.unwrap_or_else(|| track.id.clone()),
+                                    id: track.album_id.as_ref().unwrap_or(&track.id).clone(),
                                     title: format!("[Album] {}", album_title),
                                     artist: track.artist.clone(),
                                     album: album_title.to_string(),
-                                    url: String::new(),
                                     duration_ms: track.duration.map(|s| s * 1000).unwrap_or(0),
                                     local_path: None,
                                     cover_url: track.album_cover.clone(),
+                                    track_id: None,
+                                    artist_id: track.artist_id.clone(),
+                                    album_id: track.album_id.clone(),
                                 });
                             }
                         }
@@ -1321,10 +1269,12 @@ impl TuiApp {
                                 title: format!("[Artist] {}", artist.name),
                                 artist: artist.name.clone(),
                                 album: format!("{} albums", artist.albums_count.unwrap_or(0)),
-                                url: String::new(),
                                 duration_ms: 0,
                                 local_path: None,
                                 cover_url: artist.image.as_ref().and_then(|img| img.large.clone()),
+                                track_id: None,
+                                artist_id: Some(artist.id.clone()),
+                                album_id: None,
                             });
                         }
                         crate::search::SearchResultItem::Track(track) => {
@@ -1334,10 +1284,12 @@ impl TuiApp {
                                 title: format!("[Artist] {}", track.artist),
                                 artist: track.artist.clone(),
                                 album: "From track search".to_string(),
-                                url: String::new(),
                                 duration_ms: 0,
                                 local_path: None,
                                 cover_url: None,
+                                track_id: None,
+                                artist_id: track.artist_id.clone(),
+                                album_id: None,
                             });
                         }
                         _ => {
@@ -1395,7 +1347,7 @@ impl TuiApp {
             PlayerState::Paused => self.player.resume().await,
             PlayerState::Stopped => {
                 if let Some(track) = self.tracks.get(0) {
-                    self.player.load_and_play(&track.url).await
+                    self.player.load_and_play_track(track.clone()).await
                 } else {
                     Ok(())
                 }
@@ -1411,70 +1363,9 @@ impl TuiApp {
         };
 
         if let Some(selected_index) = selected_index {
-            // Get track info first to avoid borrow conflicts
-            let (track_id, track_title, needs_url) = {
-                if let Some(track) = self.tracks.get(selected_index) {
-                    (
-                        track.id.clone(),
-                        track.title.clone(),
-                        self.current_view == View::Search && track.url.is_empty(),
-                    )
-                } else {
-                    return Ok(());
-                }
-            };
-
-            // If we're in search view and the track doesn't have a URL yet, get it
-            if needs_url {
-                self.status_message = Some(format!("Getting stream URL for {}...", track_title));
-
-                let cache = self.cache.read().await;
-                let track_ref = self.tracks.get(selected_index).unwrap();
-                match self
-                    .search_api
-                    .get_track_stream_url(track_ref, Some(&*cache))
-                    .await
-                {
-                    Ok(stream_url) => {
-                        drop(cache);
-                        // Update the track in the search results
-                        if let Some(search_track) =
-                            self.search_results.iter_mut().find(|t| t.id == track_id)
-                        {
-                            search_track.url = stream_url.clone();
-                        }
-                        // Update the track in the current tracks list
-                        if let Some(current_track) = self.tracks.get_mut(selected_index) {
-                            current_track.url = stream_url.clone();
-                        }
-                        self.status_message = Some(format!("Now playing: {}", track_title));
-                        self.player.load_and_play(&stream_url).await?;
-                    }
-                    Err(e) => {
-                        self.status_message = Some(format!("Failed to get stream URL: {}", e));
-                        return Err(e);
-                    }
-                }
-            } else {
-                // Track already has URL or we're not in search view
-                if let Some(track) = self.tracks.get(selected_index) {
-                    self.status_message = Some(format!("Now playing: {}", track.title));
-                    
-                    // For detailed album view, we need to get stream URL first
-                    if self.current_view == View::DetailedAlbum && track.url.is_empty() {
-                        match self.search_api.get_track_stream_url(track, None).await {
-                            Ok(stream_url) => {
-                                self.player.load_and_play(&stream_url).await?;
-                            }
-                            Err(e) => {
-                                self.status_message = Some(format!("Failed to get stream URL: {}", e));
-                                return Err(e);
-                            }
-                        }
-                    } else {
-                        self.player.load_and_play(&track.url).await?;
-                    }
-                }
+            if let Some(track) = self.tracks.get(selected_index) {
+                self.status_message = Some(format!("Now playing: {}", track.title));
+                self.player.load_and_play_track(track.clone()).await?;
             }
         }
         Ok(())
