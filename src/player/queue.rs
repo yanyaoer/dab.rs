@@ -48,7 +48,7 @@ impl StreamUrl {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum RepeatMode {
     Off,
     One,

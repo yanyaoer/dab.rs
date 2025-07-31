@@ -22,6 +22,7 @@ pub struct PlayerStatus {
     pub duration_ms: u32,
     pub volume: f32,
     pub queue_length: usize,
+    pub repeat_mode: RepeatMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -51,6 +52,7 @@ pub enum PlayerCommand {
     ClearAndPlay(Vec<String>), // Keep for backwards compatibility
     ClearAndPlayTracks(Vec<Track>), // New command that accepts Tracks directly
     SetVolume(f32),
+    SetRepeatMode(RepeatMode),
     GetStatus(tokio::sync::oneshot::Sender<PlayerStatus>),
 }
 
@@ -61,5 +63,7 @@ pub enum PlayerEvent {
     PositionChanged(u32),
     VolumeChanged(f32),
     QueueChanged,
+    RepeatModeChanged(RepeatMode),
+    TrackEnded,
     Error(String),
 }

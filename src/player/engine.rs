@@ -7,7 +7,7 @@ use super::decoder::AudioDecoder;
 use super::loader::AudioLoader;
 use super::sink::AudioSink;
 use super::queue::StreamUrl;
-use super::{PlayerCommand, PlayerEvent, PlayerState, PlayerStatus, Queue, Track};
+use super::{PlayerCommand, PlayerEvent, PlayerState, PlayerStatus, Queue, Track, RepeatMode};
 use crate::cache::Cache;
 use crate::error::{DabError, DabResult};
 use crate::search::MusicSearchApi;
@@ -18,6 +18,7 @@ pub struct PlayerEngine {
     queue: Arc<Queue>,
     search_api: Arc<MusicSearchApi>,
     stream_url_cache: Arc<RwLock<std::collections::HashMap<String, StreamUrl>>>,
+    repeat_mode: Arc<RwLock<RepeatMode>>,
     _handle: tokio::task::JoinHandle<()>,
 }
 
@@ -36,12 +37,14 @@ impl PlayerEngine {
         let current_track = Arc::new(RwLock::new(None::<Track>));
         let position_ms = Arc::new(RwLock::new(0u32));
         let volume = Arc::new(RwLock::new(0.8f32));
+        let repeat_mode = Arc::new(RwLock::new(RepeatMode::Off));
 
         let handle = {
             let state = state.clone();
             let current_track = current_track.clone();
             let position_ms = position_ms.clone();
             let volume = volume.clone();
+            let repeat_mode = repeat_mode.clone();
             let event_tx = event_tx.clone();
             let audio_sink = audio_sink.clone();
             let queue = queue.clone();
@@ -54,6 +57,7 @@ impl PlayerEngine {
                     current_track,
                     position_ms,
                     volume,
+                    repeat_mode,
                     queue,
                     loader,
                     audio_sink,
@@ -68,6 +72,7 @@ impl PlayerEngine {
             queue,
             search_api: Arc::new(MusicSearchApi::new()),
             stream_url_cache: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            repeat_mode,
             _handle: handle,
         })
     }
@@ -79,6 +84,7 @@ impl PlayerEngine {
         current_track: Arc<RwLock<Option<Track>>>,
         position_ms: Arc<RwLock<u32>>,
         volume: Arc<RwLock<f32>>,
+        repeat_mode: Arc<RwLock<RepeatMode>>,
         queue: Arc<Queue>,
         loader: AudioLoader,
         audio_sink: Arc<RwLock<AudioSink>>,
@@ -88,6 +94,37 @@ impl PlayerEngine {
         
         info!("Player engine started");
 
+        // Start auto-advance monitoring task
+        let auto_advance_task = {
+            let state = state.clone();
+            let current_track = current_track.clone();
+            let repeat_mode = repeat_mode.clone();
+            let queue = queue.clone();
+            let event_tx = event_tx.clone();
+            let audio_sink = audio_sink.clone();
+            let loader = loader.clone();
+            let search_api = search_api.clone();
+            let stream_url_cache = stream_url_cache.clone();
+            let position_ms = position_ms.clone();
+            let volume = volume.clone();
+            
+            tokio::spawn(async move {
+                Self::auto_advance_monitor(
+                    state,
+                    current_track,
+                    repeat_mode,
+                    queue,
+                    event_tx,
+                    audio_sink,
+                    loader,
+                    search_api,
+                    stream_url_cache,
+                    position_ms,
+                    volume,
+                ).await;
+            })
+        };
+
         while let Some(command) = command_rx.recv().await {
             if let Err(e) = Self::handle_command(
                 command,
@@ -96,6 +133,7 @@ impl PlayerEngine {
                 &current_track,
                 &position_ms,
                 &volume,
+                &repeat_mode,
                 &queue,
                 &loader,
                 &audio_sink,
@@ -119,6 +157,7 @@ impl PlayerEngine {
         current_track: &Arc<RwLock<Option<Track>>>,
         position_ms: &Arc<RwLock<u32>>,
         volume: &Arc<RwLock<f32>>,
+        repeat_mode: &Arc<RwLock<RepeatMode>>,
         queue: &Arc<Queue>,
         loader: &AudioLoader,
         audio_sink: &Arc<RwLock<AudioSink>>,
@@ -145,6 +184,7 @@ impl PlayerEngine {
                     current_track,
                     position_ms,
                     volume,
+                    repeat_mode,
                     queue,
                     loader,
                     audio_sink,
@@ -161,6 +201,7 @@ impl PlayerEngine {
                     current_track,
                     position_ms,
                     volume,
+                    repeat_mode,
                     queue,
                     loader,
                     audio_sink,
@@ -186,6 +227,7 @@ impl PlayerEngine {
                                 current_track,
                                 position_ms,
                                 volume,
+                                repeat_mode,
                                 queue,
                                 loader,
                                 audio_sink,
@@ -228,6 +270,7 @@ impl PlayerEngine {
                         current_track,
                         position_ms,
                         volume,
+                        repeat_mode,
                         queue,
                         loader,
                         audio_sink,
@@ -250,6 +293,7 @@ impl PlayerEngine {
                         current_track,
                         position_ms,
                         volume,
+                        repeat_mode,
                         queue,
                         loader,
                         audio_sink,
@@ -323,6 +367,7 @@ impl PlayerEngine {
                         current_track,
                         position_ms,
                         volume,
+                        repeat_mode,
                         queue,
                         loader,
                         audio_sink,
@@ -346,6 +391,7 @@ impl PlayerEngine {
                         current_track,
                         position_ms,
                         volume,
+                        repeat_mode,
                         queue,
                         loader,
                         audio_sink,
@@ -362,6 +408,13 @@ impl PlayerEngine {
                 *volume.write().await = clamped_volume;
                 let _ = event_tx.send(PlayerEvent::VolumeChanged(clamped_volume));
             }
+            PlayerCommand::SetRepeatMode(mode) => {
+                *repeat_mode.write().await = mode;
+                if let Err(e) = queue.send_command(super::queue::QueueCommand::SetRepeat(mode)).await {
+                    warn!("Failed to set repeat mode in queue: {}", e);
+                }
+                let _ = event_tx.send(PlayerEvent::RepeatModeChanged(mode));
+            }
             PlayerCommand::GetStatus(tx) => {
                 let status = PlayerStatus {
                     state: state.read().await.clone(),
@@ -370,6 +423,7 @@ impl PlayerEngine {
                     duration_ms: 0, // TODO: Get from decoder
                     volume: *volume.read().await,
                     queue_length: queue.len().await,
+                    repeat_mode: *repeat_mode.read().await,
                 };
                 let _ = tx.send(status);
             }
@@ -385,6 +439,7 @@ impl PlayerEngine {
         current_track: &Arc<RwLock<Option<Track>>>,
         position_ms: &Arc<RwLock<u32>>,
         volume: &Arc<RwLock<f32>>,
+        repeat_mode: &Arc<RwLock<RepeatMode>>,
         queue: &Arc<Queue>,
         loader: &AudioLoader,
         audio_sink: &Arc<RwLock<AudioSink>>,
@@ -499,6 +554,14 @@ impl PlayerEngine {
             .map_err(|_| DabError::Player("Failed to get status".to_string()))
     }
 
+    pub async fn set_repeat_mode(&mut self, mode: RepeatMode) -> DabResult<()> {
+        self.send_command(PlayerCommand::SetRepeatMode(mode)).await
+    }
+
+    pub async fn get_repeat_mode(&self) -> RepeatMode {
+        *self.repeat_mode.read().await
+    }
+
     async fn send_command(&self, command: PlayerCommand) -> DabResult<()> {
         self.command_tx
             .send(command)
@@ -591,5 +654,98 @@ impl PlayerEngine {
 
         // If all else fails, treat as URL
         Ok(Track::from_url(identifier))
+    }
+
+    /// Auto-advance monitor that checks for track completion and advances queue
+    async fn auto_advance_monitor(
+        state: Arc<RwLock<PlayerState>>,
+        current_track: Arc<RwLock<Option<Track>>>,
+        repeat_mode: Arc<RwLock<RepeatMode>>,
+        queue: Arc<Queue>,
+        event_tx: mpsc::UnboundedSender<PlayerEvent>,
+        audio_sink: Arc<RwLock<AudioSink>>,
+        loader: AudioLoader,
+        search_api: Arc<MusicSearchApi>,
+        stream_url_cache: Arc<RwLock<std::collections::HashMap<String, StreamUrl>>>,
+        position_ms: Arc<RwLock<u32>>,
+        volume: Arc<RwLock<f32>>,
+    ) {
+        let mut interval = tokio::time::interval(Duration::from_millis(100));
+        
+        info!("Auto-advance monitor started");
+        
+        loop {
+            interval.tick().await;
+            
+            // Check if we're currently playing and the sink is empty (track ended)
+            let current_state = state.read().await.clone();
+            if current_state == PlayerState::Playing {
+                let is_empty = audio_sink.read().await.is_empty();
+                
+                if is_empty {
+                    // Track has ended, handle auto-advance
+                    info!("Track ended, handling auto-advance");
+                    let _ = event_tx.send(PlayerEvent::TrackEnded);
+                    
+                    let current_repeat_mode = *repeat_mode.read().await;
+                    
+                    match current_repeat_mode {
+                        RepeatMode::One => {
+                            // Repeat current track
+                            if let Some(track) = current_track.read().await.clone() {
+                                info!("Repeating current track: {}", track.title);
+                                if let Err(e) = Self::load_and_play_track_internal(
+                                    &track,
+                                    &event_tx,
+                                    &state,
+                                    &current_track,
+                                    &position_ms,
+                                    &volume,
+                                    &repeat_mode,
+                                    &queue,
+                                    &loader,
+                                    &audio_sink,
+                                    &search_api,
+                                    &stream_url_cache,
+                                ).await {
+                                    error!("Failed to repeat track: {}", e);
+                                    let _ = event_tx.send(PlayerEvent::Error(e.to_string()));
+                                }
+                            }
+                        }
+                        RepeatMode::All | RepeatMode::Off => {
+                            // Try to advance to next track
+                            if let Some(next_track) = queue.next_track().await {
+                                info!("Auto-advancing to next track: {}", next_track.title);
+                                if let Err(e) = Self::load_and_play_track_internal(
+                                    &next_track,
+                                    &event_tx,
+                                    &state,
+                                    &current_track,
+                                    &position_ms,
+                                    &volume,
+                                    &repeat_mode,
+                                    &queue,
+                                    &loader,
+                                    &audio_sink,
+                                    &search_api,
+                                    &stream_url_cache,
+                                ).await {
+                                    error!("Failed to advance to next track: {}", e);
+                                    let _ = event_tx.send(PlayerEvent::Error(e.to_string()));
+                                }
+                            } else {
+                                // No more tracks, stop playback
+                                info!("No more tracks in queue, stopping playback");
+                                *state.write().await = PlayerState::Stopped;
+                                *current_track.write().await = None;
+                                *position_ms.write().await = 0;
+                                let _ = event_tx.send(PlayerEvent::StateChanged(PlayerState::Stopped));
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
