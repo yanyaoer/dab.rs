@@ -157,6 +157,14 @@ pub struct DabAlbum {
     pub id: String,
     pub title: String,
     pub artist: String,
+    #[serde(
+        rename = "artistId",
+        default,
+        deserialize_with = "deserialize_option_id_as_string",
+        serialize_with = "serialize_option_id_as_string",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub artist_id: Option<String>,
     #[serde(rename = "releaseDate", alias = "release_date")]
     pub release_date: Option<String>,
     pub genre: Option<String>,
@@ -700,7 +708,8 @@ impl DabMusicApi {
                         title: track
                             .album_title
                             .unwrap_or_else(|| "Unknown Album".to_string()),
-                        artist: track.artist,
+                        artist: track.artist.clone(),
+                        artist_id: track.artist_id.clone(),
                         release_date: track.release_date,
                         genre: track.genre,
                         cover: track.album_cover,

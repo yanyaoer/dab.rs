@@ -387,26 +387,26 @@ impl TuiApp {
     }
 
     fn render_library(&mut self, f: &mut Frame, area: Rect) {
-        let items: Vec<ListItem> = self
-            .library
-            .get_albums()
+        let favorite_albums = self.library.get_favorite_albums();
+        
+        let items: Vec<ListItem> = favorite_albums
             .iter()
             .map(|album| {
                 ListItem::new(Line::from(vec![
                     Span::styled(
-                        format!("{:<30}", album.title),
+                        format!("{} - {}", album.artist, album.title),  
                         Style::default().fg(Color::White),
                     ),
                     Span::styled(
-                        format!("{:<20}", album.artist),
-                        Style::default().fg(Color::Yellow),
+                        format!(" ({})", album.release_date.as_deref().unwrap_or("Unknown year")),
+                        Style::default().fg(Color::DarkGray),
                     ),
                 ]))
             })
             .collect();
 
         let list = List::new(items)
-            .block(Block::default().title("Library").borders(Borders::ALL))
+            .block(Block::default().title("Favorite Albums").borders(Borders::ALL))
             .highlight_style(Style::default().bg(Color::DarkGray))
             .highlight_symbol("► ");
 
@@ -872,6 +872,27 @@ impl TuiApp {
             }
             KeyCode::Char('h') => {
                 match self.current_view {
+                    View::Library => {
+                        if let Some(selected_index) = self.list_state.selected() {
+                            let favorite_albums = self.library.get_favorite_albums();
+                            if let Some(favorite_album) = favorite_albums.get(selected_index) {
+                                if let Some(artist_id) = &favorite_album.artist_id {
+                                    match self.search_api.get_artist_discography(artist_id).await {
+                                        Ok((artist, albums)) => {
+                                            self.detailed_artist = Some(artist);
+                                            self.artist_albums = albums;
+                                            self.switch_view(View::ArtistDiscography).await;
+                                        }
+                                        Err(e) => {
+                                            self.status_message = Some(format!("Failed to load artist discography: {}", e));
+                                        }
+                                    }
+                                } else {
+                                    self.status_message = Some("Artist information not available".to_string());
+                                }
+                            }
+                        }
+                    }
                     View::Search => {
                         if let Some(selected_index) = self.list_state.selected() {
                             if let Some(track) = self.search_results.get(selected_index).cloned() {
@@ -916,10 +937,19 @@ impl TuiApp {
             KeyCode::Enter => match self.current_view {
                 View::Library => {
                     if let Some(selected_index) = self.list_state.selected() {
-                        let albums = self.library.get_albums();
-                        if let Some(album) = albums.get(selected_index) {
-                            self.selected_album = Some(album.clone().clone());
-                            self.switch_view(View::AlbumDetail).await;
+                        let favorite_albums = self.library.get_favorite_albums();
+                        if let Some(favorite_album) = favorite_albums.get(selected_index) {
+                            // Get the full album details and play it
+                            let album_id = &favorite_album.id;
+                            match self.search_api.get_album_info(album_id).await {
+                                Ok(detailed_album) => {
+                                    self.detailed_album = Some(detailed_album);
+                                    self.switch_view(View::DetailedAlbum).await;
+                                }
+                                Err(e) => {
+                                    self.status_message = Some(format!("Failed to load album: {}", e));
+                                }
+                            }
                         }
                     }
                 }
@@ -1006,6 +1036,47 @@ impl TuiApp {
             }
             KeyCode::Char('A') => {
                 match self.current_view {
+                    View::Library => {
+                        if let Some(selected_index) = self.list_state.selected() {
+                            let favorite_albums = self.library.get_favorite_albums();
+                            if let Some(favorite_album) = favorite_albums.get(selected_index) {
+                                let album_id = &favorite_album.id;
+                                match self.search_api.get_album_info(album_id).await {
+                                    Ok(detailed_album) => {
+                                        if let Some(tracks) = &detailed_album.tracks {
+                                            // Convert DabTrack to Track
+                                            let player_tracks: Vec<Track> = tracks
+                                                .iter()
+                                                .map(|dab_track| Track {
+                                                    id: dab_track.id.clone(),
+                                                    title: dab_track.title.clone(),
+                                                    artist: dab_track.artist.clone(),
+                                                    album: dab_track.album_title.clone().unwrap_or_else(|| detailed_album.title.clone()),
+                                                    duration_ms: dab_track.duration.unwrap_or(0) * 1000,
+                                                    local_path: None,
+                                                    cover_url: dab_track.album_cover.clone(),
+                                                    track_id: Some(dab_track.id.clone()),
+                                                    artist_id: dab_track.artist_id.clone(),
+                                                    album_id: dab_track.album_id.clone(),
+                                                })
+                                                .collect();
+                                            
+                                            self.player.clear_and_play_tracks(player_tracks).await?;
+                                            self.status_message = Some(format!(
+                                                "Playing all tracks from '{}'",
+                                                detailed_album.title
+                                            ));
+                                        } else {
+                                            self.status_message = Some("No tracks found in album".to_string());
+                                        }
+                                    }
+                                    Err(e) => {
+                                        self.status_message = Some(format!("Failed to load album details: {}", e));
+                                    }
+                                }
+                            }
+                        }
+                    }
                     View::AlbumDetail => {
                         if let Some(album) = self.selected_album.as_ref() {
                             let tracks = self.library.get_tracks_by_album(&album.title);
@@ -1091,6 +1162,88 @@ impl TuiApp {
                     self.status_message = Some("Queue cleared".to_string());
                 }
             }
+            
+            KeyCode::Char('m') => {
+                match self.current_view {
+                    View::DetailedAlbum => {
+                        if let Some(ref album) = self.detailed_album {
+                            match self.library.add_favorite_album(album) {
+                                Ok(is_new) => {
+                                    if is_new {
+                                        self.status_message = Some(format!(
+                                            "Added '{}' by '{}' to library",
+                                            album.title, album.artist
+                                        ));
+                                    } else {
+                                        self.status_message = Some(format!(
+                                            "'{}' by '{}' is already in library",
+                                            album.title, album.artist
+                                        ));
+                                    }
+                                }
+                                Err(e) => {
+                                    self.status_message = Some(format!("Failed to add to library: {}", e));
+                                }
+                            }
+                        }
+                    }
+                    View::Search => {
+                        if let Some(selected_index) = self.list_state.selected() {
+                            if let Some(track) = self.search_results_raw.get(selected_index) {
+                                // Convert search result track to a DabAlbum for adding to favorites
+                                if let (Some(album_title), Some(album_id)) = (&track.album_title, &track.album_id) {
+                                    let album = crate::search::DabAlbum {
+                                        id: album_id.clone(),
+                                        title: album_title.clone(),
+                                        artist: track.artist.clone(),
+                                        artist_id: track.artist_id.clone(),
+                                        release_date: track.release_date.clone(),
+                                        genre: track.genre.clone(),
+                                        cover: track.album_cover.clone(),
+                                        tracks: None,
+                                        track_count: None,
+                                        duration: None,
+                                        label: None,
+                                        upc: None,
+                                        url: None,
+                                        streamable: None,
+                                        downloadable: None,
+                                        media_count: None,
+                                        maximum_channel_count: None,
+                                        parental_warning: None,
+                                        popularity: None,
+                                        audio_quality: track.audio_quality.clone(),
+                                    };
+                                    
+                                    match self.library.add_favorite_album(&album) {
+                                        Ok(is_new) => {
+                                            if is_new {
+                                                self.status_message = Some(format!(
+                                                    "Added '{}' by '{}' to library",
+                                                    album.title, album.artist
+                                                ));
+                                            } else {
+                                                self.status_message = Some(format!(
+                                                    "'{}' by '{}' is already in library",
+                                                    album.title, album.artist
+                                                ));
+                                            }
+                                        }
+                                        Err(e) => {
+                                            self.status_message = Some(format!("Failed to add to library: {}", e));
+                                        }
+                                    }
+                                } else {
+                                    self.status_message = Some("Track doesn't have album information".to_string());
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        self.status_message = Some("'m' key only works in Album Detail or Search view".to_string());
+                    }
+                }
+            }
 
             _ => {}
         }
@@ -1119,7 +1272,11 @@ impl TuiApp {
                 let i = match self.album_detail_state.selected() {
                     Some(i) => {
                         if i == 0 {
-                            self.tracks.len() - 1
+                            if self.tracks.is_empty() {
+                                0
+                            } else {
+                                self.tracks.len() - 1
+                            }
                         } else {
                             i - 1
                         }
@@ -1149,7 +1306,11 @@ impl TuiApp {
                 let i = match self.list_state.selected() {
                     Some(i) => {
                         if i == 0 {
-                            self.tracks.len() - 1
+                            if self.tracks.is_empty() {
+                                0
+                            } else {
+                                self.tracks.len() - 1
+                            }
                         } else {
                             i - 1
                         }
@@ -1166,7 +1327,7 @@ impl TuiApp {
             View::AlbumDetail | View::DetailedAlbum => {
                 let i = match self.album_detail_state.selected() {
                     Some(i) => {
-                        if i >= self.tracks.len() - 1 {
+                        if self.tracks.is_empty() || i >= self.tracks.len() - 1 {
                             0
                         } else {
                             i + 1
@@ -1179,7 +1340,7 @@ impl TuiApp {
             View::Queue => {
                 let i = match self.queue_state.selected() {
                     Some(i) => {
-                        if i >= self.queue_tracks.len() - 1 {
+                        if self.queue_tracks.is_empty() || i >= self.queue_tracks.len() - 1 {
                             0
                         } else {
                             i + 1
@@ -1192,7 +1353,7 @@ impl TuiApp {
             _ => {
                 let i = match self.list_state.selected() {
                     Some(i) => {
-                        if i >= self.tracks.len() - 1 {
+                        if self.tracks.is_empty() || i >= self.tracks.len() - 1 {
                             0
                         } else {
                             i + 1
@@ -1247,19 +1408,19 @@ impl TuiApp {
         self.tracks = match self.current_view {
             View::Library => {
                 self.library
-                    .get_albums()
+                    .get_favorite_albums()
                     .into_iter()
                     .map(|album| Track {
-                        id: album.title.clone(), // Using album title as ID for simplicity in TUI
+                        id: album.id.clone(), // Using album ID as the track ID
                         title: album.title.clone(),
                         artist: album.artist.clone(),
                         album: album.title.clone(),
                         duration_ms: 0,
                         local_path: None,
-                        cover_url: None,
-                        track_id: None,
-                        artist_id: None,
-                        album_id: None,
+                        cover_url: album.cover.clone(),
+                        track_id: Some(album.id.clone()),
+                        artist_id: album.artist_id.clone(),
+                        album_id: Some(album.id.clone()),
                     })
                     .collect()
             }

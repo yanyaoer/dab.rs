@@ -1137,6 +1137,10 @@ impl Cache {
             )))
         }
     }
+    
+    pub fn get_cache_dir(&self) -> &PathBuf {
+        &self.cache_dir
+    }
 }
 
 impl CacheMetadata {
