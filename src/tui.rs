@@ -961,7 +961,7 @@ impl TuiApp {
                 self.artist_albums
                     .iter()
                     .map(|album| Track {
-                        id: album.id.clone(),
+                        id: album.id.to_string(),
                         title: format!("[Album] {}", album.title),
                         artist: album.artist.clone(),
                         album: album.title.clone(),
@@ -996,9 +996,9 @@ impl TuiApp {
                 let mut tracks = Vec::new();
                 let mut raw_tracks = Vec::new();
 
-                match search_result.results {
-                    crate::search::SearchResults::Tracks { tracks: dab_tracks } => {
-                        for dab_track in dab_tracks {
+                for item in search_result.get_results() {
+                    match item {
+                        crate::search::SearchResultItem::Track(dab_track) => {
                             let mut track: Track = dab_track.clone().into();
 
                             // Check cache for existing URL
@@ -1013,10 +1013,9 @@ impl TuiApp {
                             tracks.push(track);
                             raw_tracks.push(dab_track);
                         }
-                    }
-                    _ => {
-                        // For compatibility with other search types that might return tracks
-                        debug!("Search result is not tracks, might be albums or artists");
+                        _ => {
+                            debug!("Skipping non-track item in track search");
+                        }
                     }
                 }
 
@@ -1035,13 +1034,14 @@ impl TuiApp {
                     .await?;
 
                 let mut tracks = Vec::new();
+                let mut album_keys = std::collections::HashSet::new();
 
                 // Extract tracks first, regardless of the response format
-                match search_result.results {
-                    crate::search::SearchResults::Albums { albums: dab_albums } => {
-                        for album in dab_albums {
+                for item in search_result.get_results() {
+                    match item {
+                        crate::search::SearchResultItem::Album(album) => {
                             tracks.push(Track {
-                                id: album.id.clone(),
+                                id: album.id.to_string(),
                                 title: format!("[Album] {}", album.title),
                                 artist: album.artist,
                                 album: album.title.clone(),
@@ -1051,12 +1051,8 @@ impl TuiApp {
                                 cover_url: album.cover,
                             });
                         }
-                    }
-                    crate::search::SearchResults::Tracks { tracks: dab_tracks } => {
-                        // Extract unique albums from tracks
-                        let mut album_keys = std::collections::HashSet::new();
-
-                        for track in dab_tracks {
+                        crate::search::SearchResultItem::Track(track) => {
+                            // Extract unique albums from tracks
                             let album_title = track
                                 .album_title
                                 .as_ref()
@@ -1068,8 +1064,8 @@ impl TuiApp {
                                 tracks.push(Track {
                                     id: track
                                         .album_id
-                                        .clone()
-                                        .unwrap_or_else(|| format!("album_{}", track.id)),
+                                        .unwrap_or_else(|| track.id)
+                                        .to_string(),
                                     title: format!("[Album] {}", album_title),
                                     artist: track.artist.clone(),
                                     album: album_title.to_string(),
@@ -1080,8 +1076,10 @@ impl TuiApp {
                                 });
                             }
                         }
+                        _ => {
+                            debug!("Skipping non-album/track item in album search");
+                        }
                     }
-                    _ => {}
                 }
 
                 tracks
@@ -1098,12 +1096,10 @@ impl TuiApp {
 
                 let mut tracks = Vec::new();
 
-                // Extract tracks first, regardless of the response format
-                match search_result.results {
-                    crate::search::SearchResults::Artists {
-                        artists: dab_artists,
-                    } => {
-                        for artist in dab_artists {
+                // Update to handle new search result structure
+                for item in search_result.get_results() {
+                    match item {
+                        crate::search::SearchResultItem::Artist(artist) => {
                             tracks.push(Track {
                                 id: artist.id.to_string(),
                                 title: format!("[Artist] {}", artist.name),
@@ -1115,40 +1111,23 @@ impl TuiApp {
                                 cover_url: artist.image.as_ref().and_then(|img| img.large.clone()),
                             });
                         }
-                    }
-                    crate::search::SearchResults::Tracks { tracks: dab_tracks } => {
-                        // Extract unique artists from tracks and count their albums
-                        let mut artist_album_count = std::collections::HashMap::new();
-
-                        for track in dab_tracks {
-                            let album_title = track
-                                .album_title
-                                .as_ref()
-                                .map(|s| s.as_str())
-                                .unwrap_or("Unknown Album");
-
-                            // Count unique albums for each artist
-                            let albums_for_artist = artist_album_count
-                                .entry(track.artist.clone())
-                                .or_insert_with(|| std::collections::HashSet::new());
-                            albums_for_artist.insert(album_title.to_string());
-                        }
-
-                        // Create tracks for unique artists with proper album counts
-                        for (artist_name, albums) in artist_album_count {
+                        crate::search::SearchResultItem::Track(track) => {
+                            // For artist search, create a pseudo-artist from track info
                             tracks.push(Track {
-                                id: format!("artist_{}", artist_name.replace(' ', "_")),
-                                title: format!("[Artist] {}", artist_name),
-                                artist: artist_name.clone(),
-                                album: format!("{} albums", albums.len()),
+                                id: track.id.to_string(),
+                                title: format!("[Artist] {}", track.artist),
+                                artist: track.artist.clone(),
+                                album: "From track search".to_string(),
                                 url: String::new(),
                                 duration_ms: 0,
                                 local_path: None,
                                 cover_url: None,
                             });
                         }
+                        _ => {
+                            debug!("Skipping non-artist/track item in artist search");
+                        }
                     }
-                    _ => {}
                 }
 
                 tracks
@@ -1289,7 +1268,7 @@ impl TuiApp {
     async fn show_detailed_album_from_dab_album(&mut self, album: &DabAlbum) -> DabResult<()> {
         self.status_message = Some(format!("Loading album details for {}...", album.title));
 
-        match self.search_api.get_album_info(&album.id).await {
+        match self.search_api.get_album_info(&album.id.to_string()).await {
             Ok(detailed_album) => {
                 self.detailed_album = Some(detailed_album);
                 self.switch_view(View::DetailedAlbum).await;
@@ -1341,9 +1320,9 @@ impl TuiApp {
         info!("Searching for artist '{}' to get proper ID", track.artist);
         match self.search_api.search(&track.artist, "artist", 10).await {
             Ok(search_result) => {
-                if let crate::search::SearchResults::Artists { artists } = search_result.results {
-                    // Find the best matching artist
-                    for artist in artists {
+                // Find the best matching artist from the flat results array
+                for item in search_result.get_results() {
+                    if let crate::search::SearchResultItem::Artist(artist) = item {
                         if artist.name.to_lowercase() == track.artist.to_lowercase() {
                             info!(
                                 "Found matching artist: {} with ID: {}",
@@ -1376,14 +1355,11 @@ impl TuiApp {
                             }
                         }
                     }
-                    self.status_message = Some(format!(
-                        "Artist '{}' not found in search results",
-                        track.artist
-                    ));
-                } else {
-                    self.status_message =
-                        Some("Artist search returned unexpected results".to_string());
                 }
+                self.status_message = Some(format!(
+                    "Artist '{}' not found in search results",
+                    track.artist
+                ));
             }
             Err(e) => {
                 self.status_message = Some(format!("Failed to search for artist: {}", e));

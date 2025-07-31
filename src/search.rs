@@ -3,35 +3,72 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{DabError, DabResult};
+use crate::id_utils::{deserialize_u64_from_string, deserialize_option_u64_from_string, serialize_u64_as_string, serialize_option_u64_as_string, deserialize_similar_artist_ids, serialize_similar_artist_ids};
 use crate::player::Track;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
-    #[serde(flatten)]
-    pub results: SearchResults,
+    // Handle different response formats from the API
+    pub tracks: Option<Vec<DabTrack>>,
+    pub albums: Option<Vec<DabAlbum>>,  
+    pub artists: Option<Vec<DabArtist>>,
+    // Fallback for the documented API format
+    pub results: Option<Vec<SearchResultItem>>,
+}
+
+impl SearchResult {
+    /// Get all results in a unified format
+    pub fn get_results(&self) -> Vec<SearchResultItem> {
+        let mut results = Vec::new();
+        
+        // If we have the documented "results" field, use that
+        if let Some(ref api_results) = self.results {
+            return api_results.clone();
+        }
+        
+        // Otherwise, collect from the actual API response fields
+        if let Some(ref tracks) = self.tracks {
+            for track in tracks {
+                results.push(SearchResultItem::Track(track.clone()));
+            }
+        }
+        if let Some(ref albums) = self.albums {
+            for album in albums {
+                results.push(SearchResultItem::Album(album.clone()));
+            }
+        }
+        if let Some(ref artists) = self.artists {
+            for artist in artists {
+                results.push(SearchResultItem::Artist(artist.clone()));
+            }
+        }
+        
+        results
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum SearchResults {
-    Tracks { tracks: Vec<DabTrack> },
-    Albums { albums: Vec<DabAlbum> },
-    Artists { artists: Vec<DabArtist> },
+pub enum SearchResultItem {
+    Track(DabTrack),
+    Album(DabAlbum),
+    Artist(DabArtist),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DabTrack {
+    #[serde(deserialize_with = "deserialize_u64_from_string", serialize_with = "serialize_u64_as_string")]
     pub id: u64,
     pub title: String,
     pub artist: String,
-    #[serde(rename = "artistId", default)]
+    #[serde(rename = "artistId", default, deserialize_with = "deserialize_option_u64_from_string", serialize_with = "serialize_option_u64_as_string", skip_serializing_if = "Option::is_none")]
     pub artist_id: Option<u64>,
     #[serde(rename = "albumTitle", default)]
     pub album_title: Option<String>,
     #[serde(rename = "albumCover", default)]
     pub album_cover: Option<String>,
-    #[serde(rename = "albumId", default)]
-    pub album_id: Option<String>,
+    #[serde(rename = "albumId", default, deserialize_with = "deserialize_option_u64_from_string", serialize_with = "serialize_option_u64_as_string", skip_serializing_if = "Option::is_none")]
+    pub album_id: Option<u64>,
     #[serde(rename = "releaseDate", default)]
     pub release_date: Option<String>,
     #[serde(default)]
@@ -45,7 +82,7 @@ pub struct DabTrack {
     pub version: Option<String>,
     #[serde(default)]
     pub label: Option<String>,
-    #[serde(rename = "labelId", default)]
+    #[serde(rename = "labelId", default, deserialize_with = "deserialize_option_u64_from_string", serialize_with = "serialize_option_u64_as_string", skip_serializing_if = "Option::is_none")]
     pub label_id: Option<u64>,
     #[serde(default)]
     pub upc: Option<String>,
@@ -89,7 +126,8 @@ pub struct AudioQuality {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DabAlbum {
-    pub id: String,
+    #[serde(deserialize_with = "deserialize_u64_from_string", serialize_with = "serialize_u64_as_string")]
+    pub id: u64,
     pub title: String,
     pub artist: String,
     #[serde(rename = "releaseDate", alias = "release_date")]
@@ -129,6 +167,7 @@ pub struct DabAlbum {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DabArtist {
+    #[serde(deserialize_with = "deserialize_u64_from_string", serialize_with = "serialize_u64_as_string")]
     pub id: u64,
     pub name: String,
     #[serde(rename = "albumsCount", alias = "albums_count")]
@@ -148,7 +187,7 @@ pub struct DabArtist {
     pub slug: Option<String>,
     pub image: Option<ArtistImage>,
     pub biography: Option<ArtistBiography>,
-    #[serde(rename = "similarArtistIds", alias = "similar_artist_ids", default)]
+    #[serde(rename = "similarArtistIds", alias = "similar_artist_ids", default, deserialize_with = "deserialize_similar_artist_ids", serialize_with = "serialize_similar_artist_ids", skip_serializing_if = "Option::is_none")]
     pub similar_artist_ids: Option<Vec<u64>>,
     #[serde(default)]
     pub information: Option<String>,
@@ -204,8 +243,11 @@ impl std::fmt::Display for ArtistBiography {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AlbumLabel {
     pub name: String,
+    #[serde(deserialize_with = "deserialize_u64_from_string", serialize_with = "serialize_u64_as_string")]
     pub id: u64,
+    #[serde(deserialize_with = "deserialize_option_u64_from_string", serialize_with = "serialize_option_u64_as_string", skip_serializing_if = "Option::is_none")]
     pub albums_count: Option<u64>,
+    #[serde(deserialize_with = "deserialize_option_u64_from_string", serialize_with = "serialize_option_u64_as_string", skip_serializing_if = "Option::is_none")]
     pub supplier_id: Option<u64>,
     pub slug: Option<String>,
 }
@@ -275,13 +317,14 @@ impl DabMusicApi {
                 Ok(response_text) => {
                     debug!("Raw API response: {}", response_text);
 
+                    // First, try to parse as generic JSON to understand structure
+                    if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&response_text) {
+                        debug!("JSON structure: {:#}", json_value);
+                    }
+
                     match serde_json::from_str::<SearchResult>(&response_text) {
                         Ok(search_result) => {
-                            let result_count = match &search_result.results {
-                                SearchResults::Tracks { tracks } => tracks.len(),
-                                SearchResults::Albums { albums } => albums.len(),
-                                SearchResults::Artists { artists } => artists.len(),
-                            };
+                            let result_count = search_result.get_results().len();
                             info!("DAB API search successful: found {} results", result_count);
                             Ok(search_result)
                         }
@@ -571,9 +614,9 @@ impl DabMusicApi {
         let search_result = self.search(query, "track", limit).await?;
         let mut tracks = Vec::new();
 
-        match search_result.results {
-            SearchResults::Tracks { tracks: dab_tracks } => {
-                for dab_track in dab_tracks {
+        for item in search_result.get_results() {
+            match item {
+                SearchResultItem::Track(dab_track) => {
                     let mut track: Track = dab_track.clone().into();
 
                     // Only check cache, don't fetch stream URL during search
@@ -593,10 +636,9 @@ impl DabMusicApi {
 
                     tracks.push(track);
                 }
-            }
-            _ => {
-                // For compatibility, convert other types to tracks if possible
-                debug!("Search result is not tracks, might be albums or artists");
+                _ => {
+                    debug!("Skipping non-track item in track search");
+                }
             }
         }
 
@@ -607,17 +649,17 @@ impl DabMusicApi {
         let search_result = self.search(query, "album", limit).await?;
         let mut albums = Vec::new();
 
-        match search_result.results {
-            SearchResults::Albums { albums: dab_albums } => {
-                albums = dab_albums;
-            }
-            SearchResults::Tracks { tracks } => {
-                // Convert tracks to albums (fallback for backward compatibility)
-                for track in tracks {
+        for item in search_result.get_results() {
+            match item {
+                SearchResultItem::Album(dab_album) => {
+                    albums.push(dab_album);
+                }
+                SearchResultItem::Track(track) => {
+                    // Convert tracks to albums (fallback for backward compatibility)
                     albums.push(DabAlbum {
                         id: track
                             .album_id
-                            .unwrap_or_else(|| format!("album_{}", track.id)),
+                            .unwrap_or_else(|| track.id),
                         title: track
                             .album_title
                             .unwrap_or_else(|| "Unknown Album".to_string()),
@@ -640,9 +682,9 @@ impl DabMusicApi {
                         audio_quality: None,
                     });
                 }
-            }
-            _ => {
-                debug!("Search result is not albums or tracks");
+                _ => {
+                    debug!("Skipping non-album/track item in album search");
+                }
             }
         }
 
@@ -653,17 +695,15 @@ impl DabMusicApi {
         let search_result = self.search(query, "artist", limit).await?;
         let mut artists = Vec::new();
 
-        match search_result.results {
-            SearchResults::Artists {
-                artists: dab_artists,
-            } => {
-                artists = dab_artists;
-            }
-            SearchResults::Tracks { tracks } => {
-                // Extract unique artists from tracks and count their albums
-                let mut artist_album_count = std::collections::HashMap::new();
+        for item in search_result.get_results() {
+            match item {
+                SearchResultItem::Artist(dab_artist) => {
+                    artists.push(dab_artist);
+                }
+                SearchResultItem::Track(track) => {
+                    // Extract unique artists from tracks and count their albums
+                    let mut artist_album_count = std::collections::HashMap::new();
 
-                for track in tracks {
                     let album_title = track
                         .album_title
                         .as_ref()
@@ -675,26 +715,26 @@ impl DabMusicApi {
                         .entry(track.artist.clone())
                         .or_insert_with(|| std::collections::HashSet::new());
                     albums_for_artist.insert(album_title.to_string());
-                }
 
-                // Create artists with proper album counts
-                for (artist_name, albums) in artist_album_count {
-                    artists.push(DabArtist {
-                        id: Self::generate_artist_id(&artist_name),
-                        name: artist_name,
-                        albums_count: Some(albums.len() as u32),
-                        albums_as_primary_artist_count: None,
-                        albums_as_primary_composer_count: None,
-                        slug: None,
-                        image: None,
-                        biography: None,
-                        similar_artist_ids: None,
-                        information: None,
-                    });
+                    // Create artist with proper album counts
+                    for (artist_name, albums) in artist_album_count {
+                        artists.push(DabArtist {
+                            id: Self::generate_artist_id(&artist_name),
+                            name: artist_name,
+                            albums_count: Some(albums.len() as u32),
+                            albums_as_primary_artist_count: None,
+                            albums_as_primary_composer_count: None,
+                            slug: None,
+                            image: None,
+                            biography: None,
+                            similar_artist_ids: None,
+                            information: None,
+                        });
+                    }
                 }
-            }
-            _ => {
-                debug!("Search result is not artists or tracks");
+                _ => {
+                    debug!("Skipping non-artist/track item in artist search");
+                }
             }
         }
 

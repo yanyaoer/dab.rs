@@ -1,7 +1,7 @@
 use tempfile::NamedTempFile;
 use tokio::fs;
 
-use dab_rs::cache::{Cache, Id3Metadata, SearchQuery};
+use dab::cache::{Cache, CachedTrackInfo};
 
 #[tokio::test]
 async fn test_cache_metadata_extraction() {

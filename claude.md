@@ -15,6 +15,13 @@
     - TUI 中按键 / 进行搜索
     - 支持命令 dab search 'query' 搜索歌曲
     - @resource/openapi.yaml 搜索服务和对应的在线曲库的接口请参考这个文档描述来实现, 获取歌曲资源的 url 进行流式播放以及缓存管理
+    - 使用 api 的 search, discography 和 album 接口, 获取对应的专辑列表和专辑详情
+        - 接口返回的各种id类型经常会变化，可以在序列化时将 id,artistId,albumId,trackId 等统一转换为 u64 处理
+        - 返回的数据结构参考, 请用于编写测试用例，确保相关 model 的序列化正确:
+            search: ./resource/mock_search_q_coldplay_type_artist.json
+            discography: ./resource/mock_discography_artistId_40226.json 
+            album: ./resource/mock_album_albumId_0190295978044.json
+
 
 - 支持本地文件缓存, 优先读取和播放本地音频文件
     - 缓存音频文件时, 将歌曲的id3相关信息以及唯一id等记录到 metadata, 用于在线查询或者专辑详情页的缓存状态判断

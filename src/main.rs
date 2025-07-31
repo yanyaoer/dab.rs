@@ -8,6 +8,7 @@ mod cache;
 mod cli;
 mod config;
 mod error;
+mod id_utils;
 mod library;
 mod player;
 mod search;
