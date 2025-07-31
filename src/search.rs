@@ -3,7 +3,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{DabError, DabResult};
-use crate::id_utils::{deserialize_u64_from_string, deserialize_option_u64_from_string, serialize_u64_as_string, serialize_option_u64_as_string, deserialize_similar_artist_ids, serialize_similar_artist_ids};
+use crate::id_utils::{deserialize_id_as_string, deserialize_option_id_as_string, serialize_id_as_string, serialize_option_id_as_string, deserialize_similar_artist_ids, serialize_similar_artist_ids};
 use crate::player::Track;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,18 +57,18 @@ pub enum SearchResultItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DabTrack {
-    #[serde(deserialize_with = "deserialize_u64_from_string", serialize_with = "serialize_u64_as_string")]
-    pub id: u64,
+    #[serde(deserialize_with = "deserialize_id_as_string", serialize_with = "serialize_id_as_string")]
+    pub id: String,
     pub title: String,
     pub artist: String,
-    #[serde(rename = "artistId", default, deserialize_with = "deserialize_option_u64_from_string", serialize_with = "serialize_option_u64_as_string", skip_serializing_if = "Option::is_none")]
-    pub artist_id: Option<u64>,
+    #[serde(rename = "artistId", default, deserialize_with = "deserialize_option_id_as_string", serialize_with = "serialize_option_id_as_string", skip_serializing_if = "Option::is_none")]
+    pub artist_id: Option<String>,
     #[serde(rename = "albumTitle", default)]
     pub album_title: Option<String>,
     #[serde(rename = "albumCover", default)]
     pub album_cover: Option<String>,
-    #[serde(rename = "albumId", default, deserialize_with = "deserialize_option_u64_from_string", serialize_with = "serialize_option_u64_as_string", skip_serializing_if = "Option::is_none")]
-    pub album_id: Option<u64>,
+    #[serde(rename = "albumId", default, deserialize_with = "deserialize_option_id_as_string", serialize_with = "serialize_option_id_as_string", skip_serializing_if = "Option::is_none")]
+    pub album_id: Option<String>,
     #[serde(rename = "releaseDate", default)]
     pub release_date: Option<String>,
     #[serde(default)]
@@ -82,8 +82,8 @@ pub struct DabTrack {
     pub version: Option<String>,
     #[serde(default)]
     pub label: Option<String>,
-    #[serde(rename = "labelId", default, deserialize_with = "deserialize_option_u64_from_string", serialize_with = "serialize_option_u64_as_string", skip_serializing_if = "Option::is_none")]
-    pub label_id: Option<u64>,
+    #[serde(rename = "labelId", default, deserialize_with = "deserialize_option_id_as_string", serialize_with = "serialize_option_id_as_string", skip_serializing_if = "Option::is_none")]
+    pub label_id: Option<String>,
     #[serde(default)]
     pub upc: Option<String>,
     #[serde(rename = "mediaCount", default)]
@@ -126,8 +126,8 @@ pub struct AudioQuality {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DabAlbum {
-    #[serde(deserialize_with = "deserialize_u64_from_string", serialize_with = "serialize_u64_as_string")]
-    pub id: u64,
+    #[serde(deserialize_with = "deserialize_id_as_string", serialize_with = "serialize_id_as_string")]
+    pub id: String,
     pub title: String,
     pub artist: String,
     #[serde(rename = "releaseDate", alias = "release_date")]
@@ -167,8 +167,8 @@ pub struct DabAlbum {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DabArtist {
-    #[serde(deserialize_with = "deserialize_u64_from_string", serialize_with = "serialize_u64_as_string")]
-    pub id: u64,
+    #[serde(deserialize_with = "deserialize_id_as_string", serialize_with = "serialize_id_as_string")]
+    pub id: String,
     pub name: String,
     #[serde(rename = "albumsCount", alias = "albums_count")]
     pub albums_count: Option<u32>,
@@ -188,7 +188,7 @@ pub struct DabArtist {
     pub image: Option<ArtistImage>,
     pub biography: Option<ArtistBiography>,
     #[serde(rename = "similarArtistIds", alias = "similar_artist_ids", default, deserialize_with = "deserialize_similar_artist_ids", serialize_with = "serialize_similar_artist_ids", skip_serializing_if = "Option::is_none")]
-    pub similar_artist_ids: Option<Vec<u64>>,
+    pub similar_artist_ids: Option<Vec<String>>,
     #[serde(default)]
     pub information: Option<String>,
 }
@@ -243,12 +243,12 @@ impl std::fmt::Display for ArtistBiography {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AlbumLabel {
     pub name: String,
-    #[serde(deserialize_with = "deserialize_u64_from_string", serialize_with = "serialize_u64_as_string")]
-    pub id: u64,
-    #[serde(deserialize_with = "deserialize_option_u64_from_string", serialize_with = "serialize_option_u64_as_string", skip_serializing_if = "Option::is_none")]
-    pub albums_count: Option<u64>,
-    #[serde(deserialize_with = "deserialize_option_u64_from_string", serialize_with = "serialize_option_u64_as_string", skip_serializing_if = "Option::is_none")]
-    pub supplier_id: Option<u64>,
+    #[serde(deserialize_with = "deserialize_id_as_string", serialize_with = "serialize_id_as_string")]
+    pub id: String,
+    #[serde(deserialize_with = "deserialize_option_id_as_string", serialize_with = "serialize_option_id_as_string", skip_serializing_if = "Option::is_none")]
+    pub albums_count: Option<String>,
+    #[serde(deserialize_with = "deserialize_option_id_as_string", serialize_with = "serialize_option_id_as_string", skip_serializing_if = "Option::is_none")]
+    pub supplier_id: Option<String>,
     pub slug: Option<String>,
 }
 
@@ -261,7 +261,7 @@ pub struct StreamResponse {
 impl From<DabTrack> for Track {
     fn from(dab_track: DabTrack) -> Self {
         Track {
-            id: dab_track.id.to_string(),
+            id: dab_track.id,
             title: dab_track.title,
             artist: dab_track.artist,
             album: dab_track
@@ -541,7 +541,7 @@ impl DabMusicApi {
                             info!("Got discography for artist: {} (albums only)", artist_id);
                             // Create a minimal artist object
                             let artist = DabArtist {
-                                id: artist_id.parse().unwrap_or(0),
+                                id: artist_id.to_string(),
                                 name: "Unknown Artist".to_string(),
                                 albums_count: Some(albums.len() as u32),
                                 albums_as_primary_artist_count: None,
@@ -622,7 +622,7 @@ impl DabMusicApi {
                     // Only check cache, don't fetch stream URL during search
                     if let Some(cache) = cache {
                         if let Ok(Some(cached_url)) =
-                            cache.get_cached_url(&dab_track.id.to_string()).await
+                            cache.get_cached_url(&dab_track.id).await
                         {
                             if !cached_url.is_empty() {
                                 debug!(
@@ -659,7 +659,7 @@ impl DabMusicApi {
                     albums.push(DabAlbum {
                         id: track
                             .album_id
-                            .unwrap_or_else(|| track.id),
+                            .unwrap_or_else(|| track.id.clone()),
                         title: track
                             .album_title
                             .unwrap_or_else(|| "Unknown Album".to_string()),
@@ -719,7 +719,7 @@ impl DabMusicApi {
                     // Create artist with proper album counts
                     for (artist_name, albums) in artist_album_count {
                         artists.push(DabArtist {
-                            id: Self::generate_artist_id(&artist_name),
+                            id: artist_name.clone(), // Use artist name as ID for generated artists
                             name: artist_name,
                             albums_count: Some(albums.len() as u32),
                             albums_as_primary_artist_count: None,
@@ -739,15 +739,6 @@ impl DabMusicApi {
         }
 
         Ok(artists)
-    }
-
-    fn generate_artist_id(artist_name: &str) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-
-        let mut hasher = DefaultHasher::new();
-        artist_name.hash(&mut hasher);
-        hasher.finish()
     }
 }
 

@@ -762,7 +762,7 @@ impl TuiApp {
                                     // Get stream URL for each track
                                     match self
                                         .search_api
-                                        .get_stream_url(&dab_track.id.to_string(), None)
+                                        .get_stream_url(&dab_track.id, None)
                                         .await
                                     {
                                         Ok(url) => stream_urls.push(url),
@@ -935,7 +935,7 @@ impl TuiApp {
                         tracks
                             .iter()
                             .map(|dab_track| Track {
-                                id: dab_track.id.to_string(),
+                                id: dab_track.id.clone(),
                                 title: dab_track.title.clone(),
                                 artist: dab_track.artist.clone(),
                                 album: dab_track
@@ -961,7 +961,7 @@ impl TuiApp {
                 self.artist_albums
                     .iter()
                     .map(|album| Track {
-                        id: album.id.to_string(),
+                        id: album.id.clone(),
                         title: format!("[Album] {}", album.title),
                         artist: album.artist.clone(),
                         album: album.title.clone(),
@@ -1003,7 +1003,7 @@ impl TuiApp {
 
                             // Check cache for existing URL
                             if let Ok(Some(cached_url)) =
-                                cache.get_cached_url(&dab_track.id.to_string()).await
+                                cache.get_cached_url(&dab_track.id).await
                             {
                                 if !cached_url.is_empty() {
                                     track.url = cached_url;
@@ -1041,7 +1041,7 @@ impl TuiApp {
                     match item {
                         crate::search::SearchResultItem::Album(album) => {
                             tracks.push(Track {
-                                id: album.id.to_string(),
+                                id: album.id.clone(),
                                 title: format!("[Album] {}", album.title),
                                 artist: album.artist,
                                 album: album.title.clone(),
@@ -1064,8 +1064,7 @@ impl TuiApp {
                                 tracks.push(Track {
                                     id: track
                                         .album_id
-                                        .unwrap_or_else(|| track.id)
-                                        .to_string(),
+                                        .unwrap_or_else(|| track.id.clone()),
                                     title: format!("[Album] {}", album_title),
                                     artist: track.artist.clone(),
                                     album: album_title.to_string(),
@@ -1101,7 +1100,7 @@ impl TuiApp {
                     match item {
                         crate::search::SearchResultItem::Artist(artist) => {
                             tracks.push(Track {
-                                id: artist.id.to_string(),
+                                id: artist.id.clone(),
                                 title: format!("[Artist] {}", artist.name),
                                 artist: artist.name.clone(),
                                 album: format!("{} albums", artist.albums_count.unwrap_or(0)),
@@ -1114,7 +1113,7 @@ impl TuiApp {
                         crate::search::SearchResultItem::Track(track) => {
                             // For artist search, create a pseudo-artist from track info
                             tracks.push(Track {
-                                id: track.id.to_string(),
+                                id: track.id.clone(),
                                 title: format!("[Artist] {}", track.artist),
                                 artist: track.artist.clone(),
                                 album: "From track search".to_string(),
@@ -1268,7 +1267,7 @@ impl TuiApp {
     async fn show_detailed_album_from_dab_album(&mut self, album: &DabAlbum) -> DabResult<()> {
         self.status_message = Some(format!("Loading album details for {}...", album.title));
 
-        match self.search_api.get_album_info(&album.id.to_string()).await {
+        match self.search_api.get_album_info(&album.id).await {
             Ok(detailed_album) => {
                 self.detailed_album = Some(detailed_album);
                 self.switch_view(View::DetailedAlbum).await;
@@ -1331,7 +1330,7 @@ impl TuiApp {
 
                             match self
                                 .search_api
-                                .get_artist_discography(&artist.id.to_string())
+                                .get_artist_discography(&artist.id)
                                 .await
                             {
                                 Ok((detailed_artist, albums)) => {
@@ -1406,13 +1405,13 @@ impl TuiApp {
         } else {
             // First check if we have raw DabTrack data with artist_id field
             for dab_track in &self.search_results_raw {
-                if dab_track.id.to_string() == track.id && dab_track.artist == track.artist {
-                    if let Some(artist_id) = dab_track.artist_id {
+                if dab_track.id == track.id && dab_track.artist == track.artist {
+                    if let Some(ref artist_id) = dab_track.artist_id {
                         info!(
                             "Found artist_id in raw DabTrack data: {} for artist '{}'",
                             artist_id, track.artist
                         );
-                        return Some(artist_id.to_string());
+                        return Some(artist_id.clone());
                     }
                 }
             }

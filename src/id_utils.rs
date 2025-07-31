@@ -1,53 +1,67 @@
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 
-/// Custom deserializer for converting string IDs to u64
-pub fn deserialize_u64_from_string<'de, D>(deserializer: D) -> Result<u64, D::Error>
+/// Custom deserializer for converting various ID types to String
+/// Handles both string and numeric inputs, converting everything to string
+pub fn deserialize_id_as_string<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
-    struct U64FromStringVisitor;
+    struct IdAsStringVisitor;
 
-    impl<'de> de::Visitor<'de> for U64FromStringVisitor {
-        type Value = u64;
+    impl<'de> de::Visitor<'de> for IdAsStringVisitor {
+        type Value = String;
 
         fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-            formatter.write_str("a string containing a number or a number")
+            formatter.write_str("a string or number representing an ID")
         }
 
         fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
         where
             E: de::Error,
         {
-            // Try to parse as number first, fall back to hash if it fails
-            Ok(v.parse().unwrap_or_else(|_| string_to_u64(v)))
+            Ok(v.to_string())
         }
 
         fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
         where
             E: de::Error,
         {
-            Ok(v)
+            Ok(v.to_string())
+        }
+
+        fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(v.to_string())
+        }
+
+        fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok((v as u64).to_string())
         }
     }
 
-    deserializer.deserialize_any(U64FromStringVisitor)
+    deserializer.deserialize_any(IdAsStringVisitor)
 }
 
-/// Custom deserializer for converting optional string IDs to Option<u64>
-pub fn deserialize_option_u64_from_string<'de, D>(
+/// Custom deserializer for converting optional ID types to Option<String>
+pub fn deserialize_option_id_as_string<'de, D>(
     deserializer: D,
-) -> Result<Option<u64>, D::Error>
+) -> Result<Option<String>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    struct OptionU64FromStringVisitor;
+    struct OptionIdAsStringVisitor;
 
-    impl<'de> de::Visitor<'de> for OptionU64FromStringVisitor {
-        type Value = Option<u64>;
+    impl<'de> de::Visitor<'de> for OptionIdAsStringVisitor {
+        type Value = Option<String>;
 
         fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-            formatter.write_str("an optional string containing a number or a number")
+            formatter.write_str("an optional string or number representing an ID")
         }
 
         fn visit_none<E>(self) -> Result<Self::Value, E>
@@ -61,7 +75,7 @@ where
         where
             D: Deserializer<'de>,
         {
-            deserialize_u64_from_string(deserializer).map(Some)
+            deserialize_id_as_string(deserializer).map(Some)
         }
 
         fn visit_unit<E>(self) -> Result<Self::Value, E>
@@ -70,55 +84,68 @@ where
         {
             Ok(None)
         }
+
+        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(Some(v.to_string()))
+        }
+
+        fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(Some(v.to_string()))
+        }
+
+        fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(Some(v.to_string()))
+        }
     }
 
-    deserializer.deserialize_option(OptionU64FromStringVisitor)
+    deserializer.deserialize_option(OptionIdAsStringVisitor)
 }
 
-/// Custom serializer for converting u64 to string (for API compatibility)
-pub fn serialize_u64_as_string<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
+/// Custom serializer for String IDs (no conversion needed)
+pub fn serialize_id_as_string<S>(value: &String, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
-    value.to_string().serialize(serializer)
+    value.serialize(serializer)
 }
 
-/// Custom serializer for converting Option<u64> to Option<String> (for API compatibility)
-pub fn serialize_option_u64_as_string<S>(
-    value: &Option<u64>,
+/// Custom serializer for Option<String> IDs 
+pub fn serialize_option_id_as_string<S>(
+    value: &Option<String>,
     serializer: S,
 ) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
     match value {
-        Some(v) => serialize_u64_as_string(v, serializer),
+        Some(v) => serialize_id_as_string(v, serializer),
         None => serializer.serialize_none(),
     }
 }
 
-/// Helper function to convert string to u64 with fallback
-pub fn string_to_u64(s: &str) -> u64 {
-    s.parse().unwrap_or_else(|_| {
-        // Fallback: use a hash of the string if it's not a number
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        
-        let mut hasher = DefaultHasher::new();
-        s.hash(&mut hasher);
-        hasher.finish()
-    })
+/// Helper function to convert any ID type to string
+pub fn id_to_string<T: std::fmt::Display>(id: T) -> String {
+    id.to_string()
 }
 
-/// Helper function to convert optional string to Option<u64>
-pub fn option_string_to_u64(opt_s: &Option<String>) -> Option<u64> {
-    opt_s.as_ref().map(|s| string_to_u64(s))
+/// Helper function to convert optional ID to Option<String>
+pub fn option_id_to_string<T: std::fmt::Display>(opt_id: Option<T>) -> Option<String> {
+    opt_id.map(|id| id.to_string())
 }
 
-/// Custom deserializer for Vec<u64> that accepts both strings and numbers
+/// Custom deserializer for Vec<String> that accepts both strings and numbers
 pub fn deserialize_similar_artist_ids<'de, D>(
     deserializer: D,
-) -> Result<Option<Vec<u64>>, D::Error>
+) -> Result<Option<Vec<String>>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -130,14 +157,14 @@ where
             let mut result = Vec::new();
             for item in arr {
                 match item {
-                    Value::String(s) => result.push(string_to_u64(&s)),
+                    Value::String(s) => result.push(s),
                     Value::Number(n) => {
                         if let Some(u) = n.as_u64() {
-                            result.push(u);
+                            result.push(u.to_string());
                         } else if let Some(i) = n.as_i64() {
-                            result.push(i as u64);
+                            result.push(i.to_string());
                         } else if let Some(f) = n.as_f64() {
-                            result.push(f as u64);
+                            result.push((f as u64).to_string());
                         }
                     }
                     _ => continue,
@@ -150,19 +177,16 @@ where
     }
 }
 
-/// Custom serializer for Vec<u64> to serialize as string array
+/// Custom serializer for Vec<String> to serialize as string array
 pub fn serialize_similar_artist_ids<S>(
-    value: &Option<Vec<u64>>,
+    value: &Option<Vec<String>>,
     serializer: S,
 ) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
     match value {
-        Some(vec) => {
-            let string_vec: Vec<String> = vec.iter().map(|id| id.to_string()).collect();
-            string_vec.serialize(serializer)
-        }
+        Some(vec) => vec.serialize(serializer),
         None => serializer.serialize_none(),
     }
 }
@@ -173,41 +197,41 @@ mod tests {
     use serde_json;
 
     #[test]
-    fn test_deserialize_u64_from_string() {
+    fn test_deserialize_id_as_string_from_string() {
         #[derive(Debug, Deserialize)]
         struct Test {
-            #[serde(deserialize_with = "deserialize_u64_from_string")]
-            id: u64,
+            #[serde(deserialize_with = "deserialize_id_as_string")]
+            id: String,
         }
 
         // Test string input
         let json_str = r#"{"id": "123"}"#;
         let result: Test = serde_json::from_str(json_str).unwrap();
-        assert_eq!(result.id, 123);
+        assert_eq!(result.id, "123");
 
-        // Test number input
+        // Test number input (should be converted to string)
         let json_num = r#"{"id": 123}"#;
         let result: Test = serde_json::from_str(json_num).unwrap();
-        assert_eq!(result.id, 123);
+        assert_eq!(result.id, "123");
     }
 
     #[test]
-    fn test_deserialize_option_u64_from_string() {
+    fn test_deserialize_option_id_as_string() {
         #[derive(Debug, Deserialize)]
         struct Test {
-            #[serde(deserialize_with = "deserialize_option_u64_from_string")]
-            id: Option<u64>,
+            #[serde(deserialize_with = "deserialize_option_id_as_string")]
+            id: Option<String>,
         }
 
         // Test Some string input
         let json_str = r#"{"id": "123"}"#;
         let result: Test = serde_json::from_str(json_str).unwrap();
-        assert_eq!(result.id, Some(123));
+        assert_eq!(result.id, Some("123".to_string()));
 
-        // Test Some number input
+        // Test Some number input (converted to string)
         let json_num = r#"{"id": 123}"#;
         let result: Test = serde_json::from_str(json_num).unwrap();
-        assert_eq!(result.id, Some(123));
+        assert_eq!(result.id, Some("123".to_string()));
 
         // Test None input
         let json_none = r#"{"id": null}"#;
@@ -216,29 +240,22 @@ mod tests {
     }
 
     #[test]
-    fn test_string_to_u64() {
-        assert_eq!(string_to_u64("123"), 123);
-        assert_eq!(string_to_u64("456"), 456);
-        
-        // Test non-numeric string (should hash)
-        let hash1 = string_to_u64("abc123");
-        let hash2 = string_to_u64("abc123");
-        assert_eq!(hash1, hash2); // Same input should produce same hash
-        
-        let hash3 = string_to_u64("def456");
-        assert_ne!(hash1, hash3); // Different input should produce different hash
+    fn test_id_to_string() {
+        assert_eq!(id_to_string("123"), "123");
+        assert_eq!(id_to_string(456), "456");
+        assert_eq!(id_to_string("abc123"), "abc123");
     }
 
     #[test]
-    fn test_option_string_to_u64() {
-        assert_eq!(option_string_to_u64(&Some("123".to_string())), Some(123));
-        assert_eq!(option_string_to_u64(&Some("456".to_string())), Some(456));
-        assert_eq!(option_string_to_u64(&None), None);
+    fn test_option_id_to_string() {
+        assert_eq!(option_id_to_string(Some("123")), Some("123".to_string()));
+        assert_eq!(option_id_to_string(Some(456)), Some("456".to_string()));
+        assert_eq!(option_id_to_string::<String>(None), None);
     }
 
     #[test]
     fn test_mock_data_id_conversion() {
-        // Test with mock discography data 
+        // Test with mock discography data - now keeping IDs as strings
         let discography_json = r#"{
             "artist": {
                 "id": 40226,
@@ -257,19 +274,17 @@ mod tests {
                 assert_eq!(id_num, 40226);
                 
                 // Test string conversion function
-                let id_str = id.to_string();
-                let converted_id = string_to_u64(&id_str);
-                assert_eq!(converted_id, 40226);
+                let id_str = id_to_string(id_num);
+                assert_eq!(id_str, "40226");
             }
             
             if let Some(similar_ids) = artist.get("similarArtistIds") {
                 if let Some(ids_array) = similar_ids.as_array() {
-                    // Test conversion of each ID
+                    // Test conversion of each ID to string
                     for id in ids_array.iter() {
                         let id_num = id.as_u64().unwrap();
-                        let id_str = id.to_string();
-                        let converted_id = string_to_u64(&id_str);
-                        assert_eq!(converted_id, id_num);
+                        let id_str = id_to_string(id_num);
+                        assert_eq!(id_str, id_num.to_string());
                     }
                 }
             }
@@ -278,7 +293,7 @@ mod tests {
 
     #[test]
     fn test_album_id_conversion() {
-        // Test album with string ID (like from API)
+        // Test album with string ID (like from API) - now keeping as string
         let album_json = r#"{
             "id": "0190295978044",
             "title": "Viva La Vida or Death and All His Friends",
@@ -290,30 +305,26 @@ mod tests {
         if let Some(id) = raw_value.get("id") {
             let id_str = id.as_str().unwrap();
             
-            // Test conversion - since this is not a pure number, it should hash
-            let converted_id = string_to_u64(id_str);
+            // Test conversion - should keep as string
+            let converted_id = id_to_string(id_str);
+            assert_eq!(converted_id, "0190295978044");
             
-            // Should produce a consistent hash
-            let converted_id2 = string_to_u64(id_str);
-            assert_eq!(converted_id, converted_id2);
-            
-            // Different strings should produce different hashes
-            let different_converted = string_to_u64("different_string");
+            // Different strings should remain different
+            let different_converted = id_to_string("different_string");
             assert_ne!(converted_id, different_converted);
         }
     }
 
     #[test]
     fn test_track_id_conversion() {
-        // Test with numeric track IDs
+        // Test with numeric track IDs - now keeping as strings
         let track_ids = ["35541896", "35541897", "35541898"];
         
         for track_id in &track_ids {
-            let converted_id = string_to_u64(track_id);
+            let converted_id = id_to_string(*track_id);
             
-            // Should convert to the numeric value
-            let expected: u64 = track_id.parse().unwrap();
-            assert_eq!(converted_id, expected);
+            // Should remain as string
+            assert_eq!(converted_id, *track_id);
         }
     }
 }
