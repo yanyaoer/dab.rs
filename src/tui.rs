@@ -564,8 +564,8 @@ impl TuiApp {
             }
 
             // Navigation
-            KeyCode::Up => self.list_up(),
-            KeyCode::Down => self.list_down(),
+            KeyCode::Up | KeyCode::Char('k') => self.list_up(),
+            KeyCode::Down | KeyCode::Char('j') => self.list_down(),
             KeyCode::Char('l') => {
                 match self.current_view {
                     View::Library => {
@@ -760,10 +760,7 @@ impl TuiApp {
                                 let mut stream_urls = Vec::new();
                                 for dab_track in tracks {
                                     // Get stream URL for each track
-                                    match self
-                                        .search_api
-                                        .get_stream_url(&dab_track.id, None)
-                                        .await
+                                    match self.search_api.get_stream_url(&dab_track.id, None).await
                                     {
                                         Ok(url) => stream_urls.push(url),
                                         Err(e) => {
@@ -1002,8 +999,7 @@ impl TuiApp {
                             let mut track: Track = dab_track.clone().into();
 
                             // Check cache for existing URL
-                            if let Ok(Some(cached_url)) =
-                                cache.get_cached_url(&dab_track.id).await
+                            if let Ok(Some(cached_url)) = cache.get_cached_url(&dab_track.id).await
                             {
                                 if !cached_url.is_empty() {
                                     track.url = cached_url;
@@ -1062,9 +1058,7 @@ impl TuiApp {
 
                             if album_keys.insert(album_key.clone()) {
                                 tracks.push(Track {
-                                    id: track
-                                        .album_id
-                                        .unwrap_or_else(|| track.id.clone()),
+                                    id: track.album_id.unwrap_or_else(|| track.id.clone()),
                                     title: format!("[Album] {}", album_title),
                                     artist: track.artist.clone(),
                                     album: album_title.to_string(),
@@ -1328,11 +1322,7 @@ impl TuiApp {
                                 artist.name, artist.id
                             );
 
-                            match self
-                                .search_api
-                                .get_artist_discography(&artist.id)
-                                .await
-                            {
+                            match self.search_api.get_artist_discography(&artist.id).await {
                                 Ok((detailed_artist, albums)) => {
                                     let album_count = albums.len();
                                     self.detailed_artist = Some(detailed_artist);
@@ -1374,6 +1364,19 @@ impl TuiApp {
             // This is an album entry from search results
             Some(track.id.clone())
         } else {
+            // First check if we have raw DabTrack data with album_id field
+            for dab_track in &self.search_results_raw {
+                if dab_track.id == track.id && dab_track.artist == track.artist {
+                    if let Some(ref album_id) = dab_track.album_id {
+                        info!(
+                            "Found album_id in raw DabTrack data: {} for track '{}'",
+                            album_id, track.title
+                        );
+                        return Some(album_id.clone());
+                    }
+                }
+            }
+
             // For regular tracks, check if we can find the album ID in search results
             // Look for corresponding album in search results by matching artist and album name
             for search_track in &self.search_results {
@@ -1385,14 +1388,12 @@ impl TuiApp {
                 }
             }
 
-            // If not found in search results, try to construct from track data
-            // This is a fallback that might work with some APIs
-            if track.id.parse::<u64>().is_ok() {
-                // If track ID is numeric, this might be compatible with album API
-                Some(track.id.clone())
-            } else {
-                None
-            }
+            // If not found in search results, we'll return None instead of using track ID
+            info!(
+                "No album ID found for track '{}', cannot show album details",
+                track.title
+            );
+            None
         }
     }
 

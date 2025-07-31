@@ -49,9 +49,7 @@ where
 }
 
 /// Custom deserializer for converting optional ID types to Option<String>
-pub fn deserialize_option_id_as_string<'de, D>(
-    deserializer: D,
-) -> Result<Option<String>, D::Error>
+pub fn deserialize_option_id_as_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -118,7 +116,7 @@ where
     value.serialize(serializer)
 }
 
-/// Custom serializer for Option<String> IDs 
+/// Custom serializer for Option<String> IDs
 pub fn serialize_option_id_as_string<S>(
     value: &Option<String>,
     serializer: S,
@@ -150,7 +148,7 @@ where
     D: Deserializer<'de>,
 {
     use serde_json::Value;
-    
+
     let opt_value = Option::<Value>::deserialize(deserializer)?;
     match opt_value {
         Some(Value::Array(arr)) => {
@@ -263,21 +261,21 @@ mod tests {
                 "similarArtistIds": [35222, 118487, 40531, 71593, 45293]
             }
         }"#;
-        
+
         // Parse as generic JSON first to see raw data
         let raw_value: serde_json::Value = serde_json::from_str(discography_json).unwrap();
-        
+
         if let Some(artist) = raw_value.get("artist") {
             if let Some(id) = artist.get("id") {
                 // Test our string conversion
                 let id_num = id.as_u64().unwrap();
                 assert_eq!(id_num, 40226);
-                
+
                 // Test string conversion function
                 let id_str = id_to_string(id_num);
                 assert_eq!(id_str, "40226");
             }
-            
+
             if let Some(similar_ids) = artist.get("similarArtistIds") {
                 if let Some(ids_array) = similar_ids.as_array() {
                     // Test conversion of each ID to string
@@ -299,16 +297,16 @@ mod tests {
             "title": "Viva La Vida or Death and All His Friends",
             "artist": "Coldplay"
         }"#;
-        
+
         let raw_value: serde_json::Value = serde_json::from_str(album_json).unwrap();
-        
+
         if let Some(id) = raw_value.get("id") {
             let id_str = id.as_str().unwrap();
-            
+
             // Test conversion - should keep as string
             let converted_id = id_to_string(id_str);
             assert_eq!(converted_id, "0190295978044");
-            
+
             // Different strings should remain different
             let different_converted = id_to_string("different_string");
             assert_ne!(converted_id, different_converted);
@@ -319,10 +317,10 @@ mod tests {
     fn test_track_id_conversion() {
         // Test with numeric track IDs - now keeping as strings
         let track_ids = ["35541896", "35541897", "35541898"];
-        
+
         for track_id in &track_ids {
             let converted_id = id_to_string(*track_id);
-            
+
             // Should remain as string
             assert_eq!(converted_id, *track_id);
         }

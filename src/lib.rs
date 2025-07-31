@@ -14,5 +14,5 @@ pub use config::Config;
 pub use error::{DabError, DabResult};
 pub use library::Library;
 pub use player::{PlayerEngine, Queue, Track};
-pub use search::{DabMusicApi, DabTrack, DabAlbum, DabArtist};
+pub use search::{DabAlbum, DabArtist, DabMusicApi, DabTrack};
 pub use tui::TuiApp;
