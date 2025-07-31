@@ -399,16 +399,13 @@ impl PlayerEngine {
         // Get stream URL for the track
         let stream_url = Self::get_stream_url(track, search_api, stream_url_cache).await?;
 
-        // Create a temporary track with the stream URL for loading
+        // Create a track with the stream URL for loading
         let mut track_with_url = track.clone();
-        if track.is_local() {
-            // For local tracks, use the local_path as URL
-            track_with_url.local_path = Some(stream_url.clone());
-        }
+        // Set the local_path to the stream URL so the loader can access it
+        track_with_url.local_path = Some(stream_url.clone());
 
-        // Load the audio file using the stream URL
-        let track_for_loading = Track::from_url(&stream_url);
-        let audio_source = loader.load_track_seekable(&track_for_loading).await?;
+        // Load the audio file using the track with stream URL
+        let audio_source = loader.load_track_seekable(&track_with_url).await?;
 
         // Create decoder
         let decoder = AudioDecoder::from_seekable(audio_source)?;
