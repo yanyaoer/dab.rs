@@ -1,3 +1,7 @@
+## Tooling setup
+You run in an environment where ast-grep is available; whenever a search requires syntax-aware or structural matching, default to ast-grep --lang rust -p '<pattern>' (or set --lang appropriately) and avoid falling back to text-only tools like rg or grep unless I explicitly request a plain-text search.
+
+## Projects document
 参考 cmus 的交互界面 ./resource/cmus-2.4.3-osx.png 和 ./resource/openapi.yaml 接口描述, 编写一个 unix 风格的命令行音乐播放器
 
 - 按合理的日志分级输出调试信息和错误, 默认输出到 /tmp/dab_rs.log, 禁止 print 方式直接打印
@@ -16,8 +20,7 @@
 
 - 参考 /Users/yanyao/Projects/fork/librespot 项目的播放引擎设计, 使用 rodio backend 并实现完备的播放队列控制
     - 支持流式加载本地和在线音频文件, 一边加载一边播放
-    - 使用 tokio channel 作为通信机制, 确保播放服务为异步非阻塞模式运行, 与 ui
-      或者命令行交互时及时响应
+    - 使用 tokio channel 作为通信机制, 确保播放服务为异步非阻塞模式运行, 与 ui 或者命令行交互时及时响应
     - 支持 dab play/pause/next/prev 等命令操作播放服务
     - 支持 dab queue 'https://collie.fouland.com/audio/love_papa.mp3'
       添加本地文件和在线文件到播放列表

@@ -18,7 +18,7 @@ use std::sync::Arc;
 use crate::cache::Cache;
 use crate::error::{DabError, DabResult};
 use crate::library::{Album, Library};
-use crate::player::{PlayerEngine, PlayerEvent, PlayerState, Track};
+use crate::player::{PlayerEngine, PlayerEvent, PlayerState, Track, QueueEvent};
 use crate::search::{DabAlbum, DabArtist, DabTrack, MusicSearchApi};
 
 pub struct TuiApp {
@@ -30,7 +30,10 @@ pub struct TuiApp {
     current_view: View,
     list_state: ListState,
     album_detail_state: ListState,
+    queue_state: ListState,
     tracks: Vec<Track>,
+    queue_tracks: Vec<Track>,
+    current_queue_index: Option<usize>,
     selected_album: Option<Album>,
     status_message: Option<String>,
     // Search state
@@ -100,7 +103,10 @@ impl TuiApp {
             current_view: View::Library,
             list_state: ListState::default(),
             album_detail_state: ListState::default(),
+            queue_state: ListState::default(),
             tracks: Vec::new(),
+            queue_tracks: Vec::new(),
+            current_queue_index: None,
             selected_album: None,
             status_message: None,
             search_mode: false,
@@ -281,10 +287,80 @@ impl TuiApp {
         }
     }
 
-    fn render_queue(&self, f: &mut Frame, area: Rect) {
-        let queue_content = Paragraph::new("Queue view - Coming soon!")
-            .block(Block::default().title("Queue").borders(Borders::ALL));
-        f.render_widget(queue_content, area);
+    fn render_queue(&mut self, f: &mut Frame, area: Rect) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3), // Queue info
+                Constraint::Min(0),    // Queue tracks
+            ])
+            .split(area);
+
+        // Queue info
+        let queue_info_text = format!(
+            "Queue: {} tracks | Current: {}",
+            self.queue_tracks.len(),
+            self.current_queue_index
+                .map(|i| format!("#{}", i + 1))
+                .unwrap_or_else(|| "None".to_string())
+        );
+
+        let queue_info = Paragraph::new(queue_info_text)
+            .block(Block::default().title("Queue Info").borders(Borders::ALL))
+            .style(Style::default().fg(Color::Cyan));
+        f.render_widget(queue_info, chunks[0]);
+
+        // Queue tracks
+        if !self.queue_tracks.is_empty() {
+            let items: Vec<ListItem> = self
+                .queue_tracks
+                .iter()
+                .enumerate()
+                .map(|(i, track)| {
+                    let is_current = self.current_queue_index == Some(i);
+                    let prefix = if is_current { "▶ " } else { "  " };
+                    
+                    let cached_indicator = if !track.url.is_empty() {
+                        " [cached]"
+                    } else {
+                        ""
+                    };
+
+                    let style = if is_current {
+                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    };
+
+                    ListItem::new(Line::from(vec![
+                        Span::styled(format!("{}{}. ", prefix, i + 1), Style::default().fg(Color::Gray)),
+                        Span::styled(&track.title, style),
+                        Span::raw(" - "),
+                        Span::styled(&track.artist, Style::default().fg(Color::Yellow)),
+                        Span::styled(cached_indicator, Style::default().fg(Color::Green)),
+                    ]))
+                })
+                .collect();
+
+            let list = List::new(items)
+                .block(
+                    Block::default()
+                        .title(format!(
+                            "Queue Tracks - Press 'd' to remove, 'c' to clear all, 'Enter' to play"
+                        ))
+                        .borders(Borders::ALL),
+                )
+                .highlight_style(Style::default().bg(Color::DarkGray))
+                .highlight_symbol("► ");
+
+            f.render_stateful_widget(list, chunks[1], &mut self.queue_state);
+        } else {
+            let empty_queue = Paragraph::new("Queue is empty\nAdd tracks from Library or Search views using 'a' key")
+                .block(Block::default().title("Empty Queue").borders(Borders::ALL))
+                .style(Style::default().fg(Color::Gray))
+                .wrap(ratatui::widgets::Wrap { trim: true });
+            f.render_widget(empty_queue, chunks[1]);
+        }
     }
 
     fn render_search(&mut self, f: &mut Frame, area: Rect) {
@@ -676,6 +752,19 @@ impl TuiApp {
                 View::AlbumDetail => self.play_selected_track().await?,
                 View::Search => self.play_selected_track().await?,
                 View::DetailedAlbum => self.play_selected_track().await?,
+                View::Queue => {
+                    // Play selected track from queue
+                    if let Some(selected_index) = self.queue_state.selected() {
+                        if selected_index < self.queue_tracks.len() {
+                            let queue = self.player.get_queue();
+                            let _ = queue.send_command(crate::player::QueueCommand::JumpTo(selected_index)).await;
+                            if let Some(track) = self.queue_tracks.get(selected_index) {
+                                self.player.load_and_play(&track.url).await?;
+                                self.status_message = Some(format!("Playing: {}", track.title));
+                            }
+                        }
+                    }
+                }
                 View::ArtistDiscography => {
                     // Enter on artist discography shows album details
                     if let Some(selected_index) = self.list_state.selected() {
@@ -684,7 +773,6 @@ impl TuiApp {
                         }
                     }
                 }
-                _ => {}
             },
             KeyCode::Esc => {
                 // Go back to previous view
@@ -858,6 +946,28 @@ impl TuiApp {
                 }
             }
 
+            // Queue management keys
+            KeyCode::Char('d') => {
+                if self.current_view == View::Queue {
+                    if let Some(selected_index) = self.queue_state.selected() {
+                        if selected_index < self.queue_tracks.len() {
+                            let queue = self.player.get_queue();
+                            let _ = queue.send_command(crate::player::QueueCommand::RemoveTrack(selected_index)).await;
+                            self.refresh_queue().await;
+                            self.status_message = Some("Track removed from queue".to_string());
+                        }
+                    }
+                }
+            }
+            KeyCode::Char('c') => {
+                if self.current_view == View::Queue {
+                    let queue = self.player.get_queue();
+                    let _ = queue.send_command(crate::player::QueueCommand::Clear).await;
+                    self.refresh_queue().await;
+                    self.status_message = Some("Queue cleared".to_string());
+                }
+            }
+
             _ => {}
         }
         Ok(())
@@ -894,6 +1004,19 @@ impl TuiApp {
                 };
                 self.album_detail_state.select(Some(i));
             }
+            View::Queue => {
+                let i = match self.queue_state.selected() {
+                    Some(i) => {
+                        if i == 0 {
+                            if self.queue_tracks.is_empty() { 0 } else { self.queue_tracks.len() - 1 }
+                        } else {
+                            i - 1
+                        }
+                    }
+                    None => 0,
+                };
+                self.queue_state.select(Some(i));
+            }
             _ => {
                 let i = match self.list_state.selected() {
                     Some(i) => {
@@ -925,6 +1048,19 @@ impl TuiApp {
                 };
                 self.album_detail_state.select(Some(i));
             }
+            View::Queue => {
+                let i = match self.queue_state.selected() {
+                    Some(i) => {
+                        if i >= self.queue_tracks.len() - 1 {
+                            0
+                        } else {
+                            i + 1
+                        }
+                    }
+                    None => 0,
+                };
+                self.queue_state.select(Some(i));
+            }
             _ => {
                 let i = match self.list_state.selected() {
                     Some(i) => {
@@ -954,6 +1090,14 @@ impl TuiApp {
                         Some(0)
                     });
                 }
+                View::Queue => {
+                    self.refresh_queue().await;
+                    self.queue_state.select(if self.queue_tracks.is_empty() {
+                        None
+                    } else {
+                        Some(0)
+                    });
+                }
                 _ => {
                     self.list_state.select(if self.tracks.is_empty() {
                         None
@@ -963,6 +1107,12 @@ impl TuiApp {
                 }
             }
         }
+    }
+
+    async fn refresh_queue(&mut self) {
+        let queue = self.player.get_queue();
+        self.queue_tracks = queue.get_queue().await;
+        self.current_queue_index = queue.get_current_index().await;
     }
 
     async fn refresh_tracks_list(&mut self) {
@@ -991,7 +1141,7 @@ impl TuiApp {
                 }
             }
             View::Queue => {
-                // TODO: Get tracks from player queue
+                // Queue tracks are handled separately in refresh_queue()
                 Vec::new()
             }
             View::Search => {

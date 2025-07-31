@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, mpsc, RwLock};
+use log::{debug, info};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Track {
@@ -13,6 +14,41 @@ pub struct Track {
     pub url: String,
     pub local_path: Option<String>,
     pub cover_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RepeatMode {
+    Off,
+    One,
+    All,
+}
+
+#[derive(Debug)]
+pub enum QueueCommand {
+    AddTrack(Track),
+    AddNext(Track),
+    AddBefore(usize, Track),
+    RemoveTrack(usize),
+    MoveTrack(usize, usize),
+    Clear,
+    Next,
+    Previous,
+    JumpTo(usize),
+    SetShuffle(bool),
+    SetRepeat(RepeatMode),
+    GetQueue(tokio::sync::oneshot::Sender<Vec<Track>>),
+    GetCurrentIndex(tokio::sync::oneshot::Sender<Option<usize>>),
+}
+
+#[derive(Debug, Clone)]
+pub enum QueueEvent {
+    TrackAdded(Track, usize),
+    TrackRemoved(usize),
+    CurrentChanged(usize, Track),
+    QueueCleared,
+    ShuffleChanged(bool),
+    RepeatChanged(RepeatMode),
+    QueueUpdated(Vec<Track>),
 }
 
 impl Track {
@@ -45,39 +81,289 @@ pub struct Queue {
     tracks: Arc<RwLock<VecDeque<Track>>>,
     current_index: Arc<RwLock<Option<usize>>>,
     shuffle: Arc<RwLock<bool>>,
-    repeat: Arc<RwLock<bool>>,
+    repeat: Arc<RwLock<RepeatMode>>,
+    
+    // Communication channels
+    command_tx: mpsc::UnboundedSender<QueueCommand>,
+    event_tx: broadcast::Sender<QueueEvent>,
+    _handle: tokio::task::JoinHandle<()>,
 }
 
 impl Queue {
     pub fn new() -> Self {
+        let (command_tx, command_rx) = mpsc::unbounded_channel();
+        let (event_tx, _) = broadcast::channel(100);
+        
+        let tracks = Arc::new(RwLock::new(VecDeque::new()));
+        let current_index = Arc::new(RwLock::new(None));
+        let shuffle = Arc::new(RwLock::new(false));
+        let repeat = Arc::new(RwLock::new(RepeatMode::Off));
+        
+        let handle = {
+            let tracks = tracks.clone();
+            let current_index = current_index.clone();
+            let shuffle = shuffle.clone();
+            let repeat = repeat.clone();
+            let event_tx = event_tx.clone();
+            
+            tokio::spawn(async move {
+                Self::run_queue_service(
+                    command_rx,
+                    event_tx,
+                    tracks,
+                    current_index,
+                    shuffle,
+                    repeat,
+                ).await;
+            })
+        };
+        
         Self {
-            tracks: Arc::new(RwLock::new(VecDeque::new())),
-            current_index: Arc::new(RwLock::new(None)),
-            shuffle: Arc::new(RwLock::new(false)),
-            repeat: Arc::new(RwLock::new(false)),
+            tracks,
+            current_index,
+            shuffle,
+            repeat,
+            command_tx,
+            event_tx,
+            _handle: handle,
         }
     }
-
+    
+    async fn run_queue_service(
+        mut command_rx: mpsc::UnboundedReceiver<QueueCommand>,
+        event_tx: broadcast::Sender<QueueEvent>,
+        tracks: Arc<RwLock<VecDeque<Track>>>,
+        current_index: Arc<RwLock<Option<usize>>>,
+        shuffle: Arc<RwLock<bool>>,
+        repeat: Arc<RwLock<RepeatMode>>,
+    ) {
+        info!("Queue service started");
+        
+        while let Some(command) = command_rx.recv().await {
+            debug!("Handling queue command: {:?}", command);
+            
+            match command {
+                QueueCommand::AddTrack(track) => {
+                    let mut tracks_guard = tracks.write().await;
+                    let index = tracks_guard.len();
+                    tracks_guard.push_back(track.clone());
+                    drop(tracks_guard);
+                    
+                    let _ = event_tx.send(QueueEvent::TrackAdded(track, index));
+                    let _ = event_tx.send(QueueEvent::QueueUpdated(
+                        tracks.read().await.iter().cloned().collect()
+                    ));
+                }
+                
+                QueueCommand::AddNext(track) => {
+                    let mut tracks_guard = tracks.write().await;
+                    let current_idx = *current_index.read().await;
+                    let insert_index = if let Some(idx) = current_idx {
+                        idx + 1
+                    } else {
+                        0
+                    };
+                    tracks_guard.insert(insert_index, track.clone());
+                    drop(tracks_guard);
+                    
+                    let _ = event_tx.send(QueueEvent::TrackAdded(track, insert_index));
+                    let _ = event_tx.send(QueueEvent::QueueUpdated(
+                        tracks.read().await.iter().cloned().collect()
+                    ));
+                }
+                
+                QueueCommand::AddBefore(index, track) => {
+                    let mut tracks_guard = tracks.write().await;
+                    if index <= tracks_guard.len() {
+                        tracks_guard.insert(index, track.clone());
+                        drop(tracks_guard);
+                        
+                        let _ = event_tx.send(QueueEvent::TrackAdded(track, index));
+                        let _ = event_tx.send(QueueEvent::QueueUpdated(
+                            tracks.read().await.iter().cloned().collect()
+                        ));
+                    }
+                }
+                
+                QueueCommand::RemoveTrack(index) => {
+                    let mut tracks_guard = tracks.write().await;
+                    if index < tracks_guard.len() {
+                        tracks_guard.remove(index);
+                        drop(tracks_guard);
+                        
+                        // Update current index if needed
+                        let mut current_idx = current_index.write().await;
+                        if let Some(current) = *current_idx {
+                            if current == index {
+                                *current_idx = None; // Current track was removed
+                            } else if current > index {
+                                *current_idx = Some(current - 1); // Adjust index
+                            }
+                        }
+                        drop(current_idx);
+                        
+                        let _ = event_tx.send(QueueEvent::TrackRemoved(index));
+                        let _ = event_tx.send(QueueEvent::QueueUpdated(
+                            tracks.read().await.iter().cloned().collect()
+                        ));
+                    }
+                }
+                
+                QueueCommand::MoveTrack(from_index, to_index) => {
+                    let mut tracks_guard = tracks.write().await;
+                    if from_index < tracks_guard.len() && to_index < tracks_guard.len() {
+                        if let Some(track) = tracks_guard.remove(from_index) {
+                            tracks_guard.insert(to_index, track);
+                        }
+                        drop(tracks_guard);
+                        
+                        let _ = event_tx.send(QueueEvent::QueueUpdated(
+                            tracks.read().await.iter().cloned().collect()
+                        ));
+                    }
+                }
+                
+                QueueCommand::Clear => {
+                    tracks.write().await.clear();
+                    *current_index.write().await = None;
+                    
+                    let _ = event_tx.send(QueueEvent::QueueCleared);
+                    let _ = event_tx.send(QueueEvent::QueueUpdated(Vec::new()));
+                }
+                
+                QueueCommand::Next => {
+                    let tracks_guard = tracks.read().await;
+                    let mut current_idx = current_index.write().await;
+                    let repeat_mode = *repeat.read().await;
+                    
+                    if tracks_guard.is_empty() {
+                        continue;
+                    }
+                    
+                    let next_index = match *current_idx {
+                        Some(idx) => {
+                            if idx + 1 < tracks_guard.len() {
+                                Some(idx + 1)
+                            } else {
+                                match repeat_mode {
+                                    RepeatMode::All => Some(0),
+                                    RepeatMode::One => Some(idx), // Stay on current
+                                    RepeatMode::Off => None,
+                                }
+                            }
+                        }
+                        None => Some(0),
+                    };
+                    
+                    *current_idx = next_index;
+                    
+                    if let Some(idx) = next_index {
+                        if let Some(track) = tracks_guard.get(idx) {
+                            let _ = event_tx.send(QueueEvent::CurrentChanged(idx, track.clone()));
+                        }
+                    }
+                }
+                
+                QueueCommand::Previous => {
+                    let tracks_guard = tracks.read().await;
+                    let mut current_idx = current_index.write().await;
+                    let repeat_mode = *repeat.read().await;
+                    
+                    if tracks_guard.is_empty() {
+                        continue;
+                    }
+                    
+                    let prev_index = match *current_idx {
+                        Some(idx) => {
+                            if idx > 0 {
+                                Some(idx - 1)
+                            } else {
+                                match repeat_mode {
+                                    RepeatMode::All => Some(tracks_guard.len() - 1),
+                                    RepeatMode::One => Some(idx), // Stay on current
+                                    RepeatMode::Off => None,
+                                }
+                            }
+                        }
+                        None => {
+                            // If current is None, we're at the end. Go to the last track.
+                            if tracks_guard.len() > 0 {
+                                Some(tracks_guard.len() - 1)
+                            } else {
+                                None
+                            }
+                        }
+                    };
+                    
+                    *current_idx = prev_index;
+                    
+                    if let Some(idx) = prev_index {
+                        if let Some(track) = tracks_guard.get(idx) {
+                            let _ = event_tx.send(QueueEvent::CurrentChanged(idx, track.clone()));
+                        }
+                    }
+                }
+                
+                QueueCommand::JumpTo(index) => {
+                    let tracks_guard = tracks.read().await;
+                    if index < tracks_guard.len() {
+                        *current_index.write().await = Some(index);
+                        if let Some(track) = tracks_guard.get(index) {
+                            let _ = event_tx.send(QueueEvent::CurrentChanged(index, track.clone()));
+                        }
+                    }
+                }
+                
+                QueueCommand::SetShuffle(enabled) => {
+                    *shuffle.write().await = enabled;
+                    let _ = event_tx.send(QueueEvent::ShuffleChanged(enabled));
+                }
+                
+                QueueCommand::SetRepeat(mode) => {
+                    *repeat.write().await = mode;
+                    let _ = event_tx.send(QueueEvent::RepeatChanged(mode));
+                }
+                
+                QueueCommand::GetQueue(tx) => {
+                    let queue_copy = tracks.read().await.iter().cloned().collect();
+                    let _ = tx.send(queue_copy);
+                }
+                
+                QueueCommand::GetCurrentIndex(tx) => {
+                    let current = *current_index.read().await;
+                    let _ = tx.send(current);
+                }
+            }
+        }
+        
+        info!("Queue service stopped");
+    }
+    
+    // Public interface methods using command channel
+    pub async fn send_command(&self, command: QueueCommand) -> Result<(), String> {
+        self.command_tx.send(command)
+            .map_err(|_| "Failed to send queue command".to_string())
+    }
+    
+    pub fn subscribe(&self) -> broadcast::Receiver<QueueEvent> {
+        self.event_tx.subscribe()
+    }
+    
+    // Convenience methods that use the command channel
     pub async fn add_track(&self, track: Track) {
-        let mut tracks = self.tracks.write().await;
-        tracks.push_back(track);
+        let _ = self.send_command(QueueCommand::AddTrack(track)).await;
     }
 
     pub async fn add_track_next(&self, track: Track) {
-        let mut tracks = self.tracks.write().await;
-        let current_index = self.current_index.read().await;
-        if let Some(index) = *current_index {
-            tracks.insert(index + 1, track);
-        } else {
-            tracks.push_front(track);
-        }
+        let _ = self.send_command(QueueCommand::AddNext(track)).await;
     }
 
     pub async fn get_current_track(&self) -> Option<Track> {
-        let tracks = self.tracks.read().await;
-        let current_index = self.current_index.read().await;
-
-        if let Some(index) = *current_index {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = self.send_command(QueueCommand::GetCurrentIndex(tx)).await;
+        
+        if let Ok(Some(index)) = rx.await {
+            let tracks = self.tracks.read().await;
             tracks.get(index).cloned()
         } else {
             None
@@ -85,53 +371,17 @@ impl Queue {
     }
 
     pub async fn next_track(&self) -> Option<Track> {
-        let tracks = self.tracks.read().await;
-        let mut current_index = self.current_index.write().await;
-
-        if tracks.is_empty() {
-            return None;
-        }
-
-        let next_index = match *current_index {
-            Some(index) => {
-                if index + 1 < tracks.len() {
-                    Some(index + 1)
-                } else if *self.repeat.read().await {
-                    Some(0)
-                } else {
-                    None
-                }
-            }
-            None => Some(0),
-        };
-
-        *current_index = next_index;
-        next_index.and_then(|i| tracks.get(i).cloned())
+        let _ = self.send_command(QueueCommand::Next).await;
+        // Small delay to allow command processing
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        self.get_current_track().await
     }
 
     pub async fn previous_track(&self) -> Option<Track> {
-        let tracks = self.tracks.read().await;
-        let mut current_index = self.current_index.write().await;
-
-        if tracks.is_empty() {
-            return None;
-        }
-
-        let prev_index = match *current_index {
-            Some(index) => {
-                if index > 0 {
-                    Some(index - 1)
-                } else if *self.repeat.read().await {
-                    Some(tracks.len() - 1)
-                } else {
-                    None
-                }
-            }
-            None => Some(0),
-        };
-
-        *current_index = prev_index;
-        prev_index.and_then(|i| tracks.get(i).cloned())
+        let _ = self.send_command(QueueCommand::Previous).await;
+        // Small delay to allow command processing
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        self.get_current_track().await
     }
 
     pub async fn len(&self) -> usize {
@@ -140,9 +390,18 @@ impl Queue {
     }
 
     pub async fn clear(&self) {
-        let mut tracks = self.tracks.write().await;
-        let mut current_index = self.current_index.write().await;
-        tracks.clear();
-        *current_index = None;
+        let _ = self.send_command(QueueCommand::Clear).await;
+    }
+    
+    pub async fn get_queue(&self) -> Vec<Track> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = self.send_command(QueueCommand::GetQueue(tx)).await;
+        rx.await.unwrap_or_default()
+    }
+    
+    pub async fn get_current_index(&self) -> Option<usize> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = self.send_command(QueueCommand::GetCurrentIndex(tx)).await;
+        rx.await.unwrap_or(None)
     }
 }

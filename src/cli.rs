@@ -37,6 +37,10 @@ enum Commands {
         /// URL or file path to add to queue
         url: String,
     },
+    /// Clear the queue
+    ClearQueue,
+    /// Show current queue
+    ShowQueue,
     /// Search for music
     Search {
         /// Search query
@@ -97,6 +101,44 @@ impl Cli {
             Some(Commands::Queue { url }) => {
                 info!("Adding track to queue: {}", url);
                 player.add_to_queue(&url).await?;
+                println!("Added to queue: {}", url);
+            }
+            Some(Commands::ClearQueue) => {
+                info!("Clearing queue");
+                let queue = player.get_queue();
+                queue.clear().await;
+                println!("Queue cleared");
+            }
+            Some(Commands::ShowQueue) => {
+                info!("Showing current queue");
+                let queue = player.get_queue();
+                let tracks = queue.get_queue().await;
+                let current_index = queue.get_current_index().await;
+                
+                if tracks.is_empty() {
+                    println!("Queue is empty");
+                } else {
+                    println!("Current Queue ({} tracks):", tracks.len());
+                    if let Some(current) = current_index {
+                        println!("Current playing: #{}", current + 1);
+                    }
+                    println!();
+                    
+                    for (i, track) in tracks.iter().enumerate() {
+                        let is_current = current_index == Some(i);
+                        let prefix = if is_current { "▶ " } else { "  " };
+                        
+                        println!("{}{}. {} - {} ({})", 
+                                 prefix, i + 1, track.artist, track.title, track.album);
+                        
+                        if track.duration_ms > 0 {
+                            let total_seconds = track.duration_ms / 1000;
+                            let minutes = total_seconds / 60;
+                            let seconds = total_seconds % 60;
+                            println!("     Duration: {}:{:02}", minutes, seconds);
+                        }
+                    }
+                }
             }
             Some(Commands::Search {
                 query,

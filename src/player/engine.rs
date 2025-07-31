@@ -6,13 +6,14 @@ use tokio::sync::{mpsc, oneshot, RwLock};
 use super::decoder::AudioDecoder;
 use super::loader::AudioLoader;
 use super::sink::AudioSink;
-use super::{PlayerCommand, PlayerEvent, PlayerState, PlayerStatus, Queue, Track};
+use super::{PlayerCommand, PlayerEvent, PlayerState, PlayerStatus, Queue, Track, QueueEvent};
 use crate::cache::Cache;
 use crate::error::{DabError, DabResult};
 
 pub struct PlayerEngine {
     command_tx: mpsc::UnboundedSender<PlayerCommand>,
     event_rx: Arc<RwLock<mpsc::UnboundedReceiver<PlayerEvent>>>,
+    queue: Arc<Queue>,
     _handle: tokio::task::JoinHandle<()>,
 }
 
@@ -23,7 +24,7 @@ impl PlayerEngine {
 
         let cache = Cache::new().await?;
         let loader = AudioLoader::new(cache);
-        let queue = Queue::new();
+        let queue = Arc::new(Queue::new());
         let audio_sink = Arc::new(RwLock::new(AudioSink::new()?));
 
         // Simplified player state - start with basic functionality
@@ -39,6 +40,7 @@ impl PlayerEngine {
             let volume = volume.clone();
             let event_tx = event_tx.clone();
             let audio_sink = audio_sink.clone();
+            let queue = queue.clone();
 
             tokio::spawn(async move {
                 Self::run_internal(
@@ -59,6 +61,7 @@ impl PlayerEngine {
         Ok(Self {
             command_tx,
             event_rx: Arc::new(RwLock::new(event_rx)),
+            queue,
             _handle: handle,
         })
     }
@@ -70,7 +73,7 @@ impl PlayerEngine {
         current_track: Arc<RwLock<Option<Track>>>,
         position_ms: Arc<RwLock<u32>>,
         volume: Arc<RwLock<f32>>,
-        queue: Queue,
+        queue: Arc<Queue>,
         loader: AudioLoader,
         audio_sink: Arc<RwLock<AudioSink>>,
     ) {
@@ -105,7 +108,7 @@ impl PlayerEngine {
         current_track: &Arc<RwLock<Option<Track>>>,
         position_ms: &Arc<RwLock<u32>>,
         volume: &Arc<RwLock<f32>>,
-        queue: &Queue,
+        queue: &Arc<Queue>,
         loader: &AudioLoader,
         audio_sink: &Arc<RwLock<AudioSink>>,
     ) -> DabResult<()> {
@@ -288,7 +291,7 @@ impl PlayerEngine {
         current_track: &Arc<RwLock<Option<Track>>>,
         position_ms: &Arc<RwLock<u32>>,
         volume: &Arc<RwLock<f32>>,
-        queue: &Queue,
+        queue: &Arc<Queue>,
         loader: &AudioLoader,
         audio_sink: &Arc<RwLock<AudioSink>>,
     ) -> DabResult<()> {
@@ -390,6 +393,15 @@ impl PlayerEngine {
     pub async fn next_event(&mut self) -> Option<PlayerEvent> {
         // This is a simplified implementation
         // In a real implementation, we'd have a proper event stream
+        if let Ok(mut event_rx) = self.event_rx.try_write() {
+            if let Ok(event) = event_rx.try_recv() {
+                return Some(event);
+            }
+        }
         None
+    }
+    
+    pub fn get_queue(&self) -> Arc<Queue> {
+        self.queue.clone()
     }
 }

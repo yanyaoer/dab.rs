@@ -12,7 +12,7 @@ mod queue;
 mod sink;
 
 pub use engine::PlayerEngine;
-pub use queue::{Queue, Track};
+pub use queue::{Queue, Track, QueueCommand, QueueEvent, RepeatMode};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayerStatus {
