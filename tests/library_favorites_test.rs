@@ -5,8 +5,15 @@ use std::env;
 
 #[tokio::test]
 async fn test_favorite_album_persistence() {
-    // Set a consistent cache directory for both library instances
-    env::set_var("HOME", "/tmp/dab_test_cache");
+    // Use unique cache directory for this test
+    env::set_var("HOME", "/tmp/dab_test_cache_persistence");
+    
+    // Clean up any existing cache from previous runs
+    if let Ok(cache_dir) = std::fs::read_dir("/tmp/dab_test_cache_persistence") {
+        for entry in cache_dir.flatten() {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
     
     // Create a mock album
     let test_album = DabAlbum {
@@ -72,8 +79,15 @@ async fn test_favorite_album_persistence() {
 
 #[tokio::test]
 async fn test_remove_favorite_album() {
-    // Set a consistent cache directory
-    env::set_var("HOME", "/tmp/dab_test_cache_remove");
+    // Use unique cache directory for this test
+    env::set_var("HOME", "/tmp/dab_test_cache_remove_test");
+    
+    // Clean up any existing cache from previous runs
+    if let Ok(cache_dir) = std::fs::read_dir("/tmp/dab_test_cache_remove_test") {
+        for entry in cache_dir.flatten() {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
     
     let cache = Cache::new().await.unwrap();
     let mut library = Library::new(cache).await.unwrap();

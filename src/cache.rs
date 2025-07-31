@@ -408,14 +408,18 @@ impl Cache {
     }
 
     async fn cleanup(&self) -> DabResult<()> {
-        // Remove any files in cache directory that aren't in metadata
+        // Remove any audio files in cache directory that aren't in metadata
+        // Preserve system files like metadata.json and favorite_albums.json
         let mut entries = fs::read_dir(&self.cache_dir).await?;
 
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
-
-            if path.file_name().and_then(|n| n.to_str()) == Some("metadata.json") {
-                continue;
+            
+            // Skip system files that should never be cleaned up
+            if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
+                if filename == "metadata.json" || filename == "favorite_albums.json" {
+                    continue;
+                }
             }
 
             if path.is_file() {
