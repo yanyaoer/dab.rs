@@ -95,7 +95,7 @@ impl PlayerEngine {
         info!("Player engine started");
 
         // Start auto-advance monitoring task
-        let auto_advance_task = {
+        let _auto_advance_task = {
             let state = state.clone();
             let current_track = current_track.clone();
             let repeat_mode = repeat_mode.clone();
@@ -439,8 +439,8 @@ impl PlayerEngine {
         current_track: &Arc<RwLock<Option<Track>>>,
         position_ms: &Arc<RwLock<u32>>,
         volume: &Arc<RwLock<f32>>,
-        repeat_mode: &Arc<RwLock<RepeatMode>>,
-        queue: &Arc<Queue>,
+        _repeat_mode: &Arc<RwLock<RepeatMode>>,
+        _queue: &Arc<Queue>,
         loader: &AudioLoader,
         audio_sink: &Arc<RwLock<AudioSink>>,
         search_api: &Arc<MusicSearchApi>,

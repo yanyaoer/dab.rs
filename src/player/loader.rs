@@ -1,10 +1,8 @@
-use log::{debug, error, info};
+use log::{debug, info};
 use reqwest::Client;
-use std::io::{BufReader, Seek, SeekFrom};
 use std::sync::Arc;
 use tempfile::NamedTempFile;
-use tokio::fs::File;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
 use super::decoder::ReadSeek;
 use super::Track;

@@ -75,7 +75,7 @@ impl AudioDecoder {
             .format(&hint, mss, &fmt_opts, &meta_opts)
             .map_err(|e| DabError::Decode(format!("Failed to probe format: {}", e)))?;
 
-        let mut format = probed.format;
+        let format = probed.format;
 
         // Find the default (first) track
         let track = format

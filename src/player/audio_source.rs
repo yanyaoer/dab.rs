@@ -1,10 +1,9 @@
-use log::{debug, error, warn};
+use log::{debug, error};
 use rodio::Source;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::decoder::AudioDecoder;
-use crate::error::{DabError, DabResult};
 
 pub struct DecodedAudioSource {
     decoder: Arc<Mutex<AudioDecoder>>,

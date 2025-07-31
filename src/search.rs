@@ -661,7 +661,7 @@ impl DabMusicApi {
         &self,
         query: &str,
         limit: u32,
-        cache: Option<&crate::cache::Cache>,
+        _cache: Option<&crate::cache::Cache>,
     ) -> DabResult<Vec<Track>> {
         let search_result = self.search(query, "track", limit).await?;
         let mut tracks = Vec::new();
@@ -669,7 +669,7 @@ impl DabMusicApi {
         for item in search_result.get_results() {
             match item {
                 SearchResultItem::Track(dab_track) => {
-                    let mut track: Track = dab_track.clone().into();
+                    let track: Track = dab_track.clone().into();
 
                     // Only check cache, don't fetch stream URL during search
                     // Cache checking now handled by PlayerEngine during playback

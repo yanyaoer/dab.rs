@@ -10,7 +10,7 @@ use crate::error::{DabError, DabResult};
 use id3::TagLike;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct Id3Metadata {
+pub struct Id3Metadata {
     title: Option<String>,
     artist: Option<String>,
     album: Option<String>,
@@ -378,8 +378,6 @@ impl Cache {
         id3_metadata: &Option<Id3Metadata>,
         url: &str,
     ) -> String {
-        use sha2::{Digest, Sha256};
-
         let mut hasher = Sha256::new();
 
         // Include track ID
@@ -613,8 +611,6 @@ impl Cache {
         id3_metadata: &Option<Id3Metadata>,
         url: &str,
     ) -> String {
-        use sha2::{Digest, Sha256};
-
         let mut hasher = Sha256::new();
 
         // Include track ID

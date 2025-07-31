@@ -2,10 +2,9 @@ use id3::TagLike;
 use log::{debug, info};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use crate::cache::Cache;
-use crate::error::{DabError, DabResult};
+use crate::error::DabResult;
 use crate::player::Track;
 
 #[derive(Debug, Clone)]

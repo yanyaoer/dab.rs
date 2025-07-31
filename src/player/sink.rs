@@ -1,7 +1,6 @@
-use log::{debug, error, info};
+use log::{debug, info};
 use rodio::{OutputStream, OutputStreamHandle, Sink};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use super::audio_source::DecodedAudioSource;
 use super::decoder::AudioDecoder;

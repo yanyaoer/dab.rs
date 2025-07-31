@@ -5,11 +5,11 @@ use crossterm::{
 };
 use log::{debug, error, info};
 use ratatui::{
-    backend::{Backend, CrosstermBackend},
+    backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
     Frame, Terminal,
 };
 use std::io;
@@ -18,7 +18,7 @@ use std::sync::Arc;
 use crate::cache::Cache;
 use crate::error::{DabError, DabResult};
 use crate::library::{Album, Library};
-use crate::player::{PlayerEngine, PlayerEvent, PlayerState, Track, QueueEvent};
+use crate::player::{PlayerEngine, PlayerEvent, PlayerState, Track};
 use crate::search::{DabAlbum, DabArtist, DabTrack, MusicSearchApi};
 
 pub struct TuiApp {
@@ -407,7 +407,7 @@ impl TuiApp {
                 .search_results
                 .iter()
                 .enumerate()
-                .map(|(i, track)| {
+                .map(|(_i, track)| {
                     let cached_indicator = if track.is_local() {
                         " [local]"
                     } else {
