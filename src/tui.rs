@@ -249,11 +249,31 @@ impl TuiApp {
             let tracks = self.library.get_tracks_by_album(&album.title);
             let items: Vec<ListItem> = tracks
                 .iter()
-                .map(|track| ListItem::new(track.title.clone()))
+                .enumerate()
+                .map(|(i, track)| {
+                    let cached_indicator = if !track.url.is_empty() {
+                        " [cached]"
+                    } else {
+                        ""
+                    };
+
+                    ListItem::new(Line::from(vec![
+                        Span::styled(format!("{}. ", i + 1), Style::default().fg(Color::Gray)),
+                        Span::styled(&track.title, Style::default().fg(Color::White)),
+                        Span::styled(cached_indicator, Style::default().fg(Color::Green)),
+                    ]))
+                })
                 .collect();
 
             let list = List::new(items)
-                .block(Block::default().title("Tracks").borders(Borders::ALL))
+                .block(
+                    Block::default()
+                        .title(format!(
+                            "Tracks ({}) - Press 'a' to add next, 'A' to play all",
+                            tracks.len()
+                        ))
+                        .borders(Borders::ALL),
+                )
                 .highlight_style(Style::default().bg(Color::DarkGray))
                 .highlight_symbol("► ");
 
@@ -405,7 +425,14 @@ impl TuiApp {
                     .collect();
 
                 let list = List::new(items)
-                    .block(Block::default().title("Tracks").borders(Borders::ALL))
+                    .block(
+                        Block::default()
+                            .title(format!(
+                                "Tracks ({}) - Press 'a' to add next, 'A' to play all, 'h' for artist",
+                                tracks.len()
+                            ))
+                            .borders(Borders::ALL),
+                    )
                     .highlight_style(Style::default().bg(Color::DarkGray))
                     .highlight_symbol("► ");
 
@@ -853,42 +880,88 @@ impl TuiApp {
     }
 
     fn list_up(&mut self) {
-        let i = match self.list_state.selected() {
-            Some(i) => {
-                if i == 0 {
-                    self.tracks.len() - 1
-                } else {
-                    i - 1
-                }
+        match self.current_view {
+            View::AlbumDetail | View::DetailedAlbum => {
+                let i = match self.album_detail_state.selected() {
+                    Some(i) => {
+                        if i == 0 {
+                            self.tracks.len() - 1
+                        } else {
+                            i - 1
+                        }
+                    }
+                    None => 0,
+                };
+                self.album_detail_state.select(Some(i));
             }
-            None => 0,
-        };
-        self.list_state.select(Some(i));
+            _ => {
+                let i = match self.list_state.selected() {
+                    Some(i) => {
+                        if i == 0 {
+                            self.tracks.len() - 1
+                        } else {
+                            i - 1
+                        }
+                    }
+                    None => 0,
+                };
+                self.list_state.select(Some(i));
+            }
+        }
     }
 
     fn list_down(&mut self) {
-        let i = match self.list_state.selected() {
-            Some(i) => {
-                if i >= self.tracks.len() - 1 {
-                    0
-                } else {
-                    i + 1
-                }
+        match self.current_view {
+            View::AlbumDetail | View::DetailedAlbum => {
+                let i = match self.album_detail_state.selected() {
+                    Some(i) => {
+                        if i >= self.tracks.len() - 1 {
+                            0
+                        } else {
+                            i + 1
+                        }
+                    }
+                    None => 0,
+                };
+                self.album_detail_state.select(Some(i));
             }
-            None => 0,
-        };
-        self.list_state.select(Some(i));
+            _ => {
+                let i = match self.list_state.selected() {
+                    Some(i) => {
+                        if i >= self.tracks.len() - 1 {
+                            0
+                        } else {
+                            i + 1
+                        }
+                    }
+                    None => 0,
+                };
+                self.list_state.select(Some(i));
+            }
+        }
     }
 
     async fn switch_view(&mut self, view: View) {
         if self.current_view != view {
-            self.current_view = view;
+            self.current_view = view.clone();
             self.refresh_tracks_list().await;
-            self.list_state.select(if self.tracks.is_empty() {
-                None
-            } else {
-                Some(0)
-            });
+
+            match view {
+                View::AlbumDetail | View::DetailedAlbum => {
+                    self.album_detail_state.select(if self.tracks.is_empty() {
+                        None
+                    } else {
+                        Some(0)
+                    });
+                }
+                _ => {
+                    self.list_state.select(if self.tracks.is_empty() {
+                        None
+                    } else {
+                        Some(0)
+                    });
+                }
+            }
         }
     }
 
@@ -1182,7 +1255,12 @@ impl TuiApp {
     }
 
     async fn play_selected_track(&mut self) -> DabResult<()> {
-        if let Some(selected_index) = self.list_state.selected() {
+        let selected_index = match self.current_view {
+            View::AlbumDetail | View::DetailedAlbum => self.album_detail_state.selected(),
+            _ => self.list_state.selected(),
+        };
+
+        if let Some(selected_index) = selected_index {
             // Get track info first to avoid borrow conflicts
             let (track_id, track_title, needs_url) = {
                 if let Some(track) = self.tracks.get(selected_index) {
@@ -1231,7 +1309,21 @@ impl TuiApp {
                 // Track already has URL or we're not in search view
                 if let Some(track) = self.tracks.get(selected_index) {
                     self.status_message = Some(format!("Now playing: {}", track.title));
-                    self.player.load_and_play(&track.url).await?;
+                    
+                    // For detailed album view, we need to get stream URL first
+                    if self.current_view == View::DetailedAlbum && track.url.is_empty() {
+                        match self.search_api.get_track_stream_url(track, None).await {
+                            Ok(stream_url) => {
+                                self.player.load_and_play(&stream_url).await?;
+                            }
+                            Err(e) => {
+                                self.status_message = Some(format!("Failed to get stream URL: {}", e));
+                                return Err(e);
+                            }
+                        }
+                    } else {
+                        self.player.load_and_play(&track.url).await?;
+                    }
                 }
             }
         }
