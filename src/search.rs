@@ -310,8 +310,7 @@ pub struct AlbumLabel {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamResponse {
-    #[serde(rename = "url")]
-    pub stream_url: String,
+    pub url: String,
 }
 
 impl From<DabTrack> for Track {
@@ -333,6 +332,7 @@ impl From<DabTrack> for Track {
     }
 }
 
+#[derive(Clone)]
 pub struct DabMusicApi {
     client: Client,
     base_url: String,
@@ -439,9 +439,9 @@ impl DabMusicApi {
                 Ok(stream_response) => {
                     info!(
                         "Got stream URL for track {}: {}",
-                        track_id, stream_response.stream_url
+                        track_id, stream_response.url
                     );
-                    Ok(stream_response.stream_url)
+                    Ok(stream_response.url)
                 }
                 Err(e) => {
                     error!("Failed to parse stream response: {}", e);

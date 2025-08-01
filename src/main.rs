@@ -4,6 +4,8 @@ use std::env;
 use std::fs::OpenOptions;
 use std::io::Write;
 
+mod api_cache;
+mod async_client;
 mod cache;
 mod cli;
 mod config;
