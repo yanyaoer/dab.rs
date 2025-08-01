@@ -233,8 +233,8 @@ impl UnifiedList {
 
         let list = List::new(list_items)
             .block(Block::default().title(title).borders(Borders::ALL))
-            .highlight_style(Style::default().bg(Color::DarkGray))
-            .highlight_symbol("► ");
+            .highlight_style(Style::default().bg(Color::DarkGray));
+        // .highlight_symbol("► ");
 
         f.render_stateful_widget(list, area, &mut self.state);
     }
