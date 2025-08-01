@@ -262,9 +262,13 @@ impl StreamingAudioSource {
 
 impl Read for StreamingAudioSource {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        use log::debug;
+        
         // For sync Read trait implementation, we need to handle this carefully
         // In an async context, this should not be called directly
         let current_position = self.read_position.load(Ordering::Relaxed);
+        
+        debug!("StreamingAudioSource::read: Attempting to read {} bytes at position {}", buf.len(), current_position);
 
         // Try to read synchronously from the buffer without blocking
         self.sync_read_fallback(buf, current_position)
@@ -277,6 +281,10 @@ impl StreamingAudioSource {
         buf: &mut [u8],
         current_position: usize,
     ) -> std::io::Result<usize> {
+        use log::{debug, warn};
+        
+        debug!("sync_read_fallback: Reading {} bytes at position {}", buf.len(), current_position);
+        
         // Improved fallback for sync reads with better error handling
         let buffer_guard = match self.buffer.try_read() {
             Ok(guard) => guard,
@@ -296,11 +304,16 @@ impl StreamingAudioSource {
         };
 
         // Check if we have data available at the current position
-        let (buffer_start, buffer_size, _) = buffer_guard.get_buffer_info();
+        let (buffer_start, buffer_size, write_pos) = buffer_guard.get_buffer_info();
+        debug!(
+            "sync_read_fallback: buffer_start={}, buffer_size={}, write_pos={}, current_pos={}", 
+            buffer_start, buffer_size, write_pos, current_position
+        );
 
         if buffer_guard.is_circular {
             // For circular buffer, check if position is within our window
             if current_position < buffer_start {
+                warn!("Position {} is behind current buffer window (starts at {})", current_position, buffer_start);
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
                     "Position is behind current buffer window",
@@ -310,8 +323,10 @@ impl StreamingAudioSource {
             let buffer_position = current_position - buffer_start;
             if buffer_position >= buffer_size {
                 if self.is_download_complete() {
+                    debug!("sync_read_fallback: EOF reached (circular buffer, download complete)");
                     return Ok(0); // EOF
                 } else {
+                    debug!("sync_read_fallback: Data not available yet (circular buffer, buffer_pos={}, buffer_size={})", buffer_position, buffer_size);
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::WouldBlock,
                         "Data not available yet",
@@ -322,8 +337,10 @@ impl StreamingAudioSource {
             // For linear buffer
             if current_position >= buffer_size {
                 if self.is_download_complete() {
+                    debug!("sync_read_fallback: EOF reached (linear buffer, download complete)");
                     return Ok(0); // EOF
                 } else {
+                    debug!("sync_read_fallback: Data not available yet (linear buffer, pos={}, size={})", current_position, buffer_size);
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::WouldBlock,
                         "Data not available yet",
@@ -334,6 +351,7 @@ impl StreamingAudioSource {
 
         let bytes_read = buffer_guard.read_at_position(current_position, buf)?;
         self.read_position.fetch_add(bytes_read, Ordering::Relaxed);
+        debug!("sync_read_fallback: Successfully read {} bytes", bytes_read);
         Ok(bytes_read)
     }
     async fn async_read(&self, buf: &mut [u8]) -> std::io::Result<usize> {
@@ -695,7 +713,7 @@ impl ByteBuffer {
             read_position: 0,
             min_buffer_size,
             max_buffer_size,
-            is_circular: true, // Always enable circular buffer for streaming
+            is_circular: false, // Start with linear buffer for better stability
         }
     }
 
@@ -729,35 +747,58 @@ impl ByteBuffer {
     fn write_data_circular(&mut self, data: &[u8]) -> DabResult<()> {
         // For circular buffer, we maintain a sliding window
         let incoming_len = data.len();
-
+        
+        // Calculate how much space we need
+        let total_needed = self.data.len() + incoming_len;
+        
         // If buffer is full, make room by removing old data from the beginning
-        if self.data.len() + incoming_len > self.max_buffer_size {
-            let bytes_to_remove = (self.data.len() + incoming_len) - self.max_buffer_size;
-            let bytes_to_remove = bytes_to_remove.max(incoming_len); // Remove at least the incoming size
-
-            // Remove old data from the beginning
-            if bytes_to_remove < self.data.len() {
-                self.data.drain(0..bytes_to_remove);
-                self.read_position = self.read_position.saturating_sub(bytes_to_remove);
+        // But be careful not to remove data that hasn't been read yet
+        if total_needed > self.max_buffer_size {
+            let bytes_to_remove = total_needed - self.max_buffer_size;
+            
+            // Don't remove data that is still being read
+            // Ensure we keep at least the data from read_position onwards
+            let safe_to_remove = self.read_position.min(bytes_to_remove);
+            
+            if safe_to_remove > 0 {
+                // Remove old data from the beginning
+                self.data.drain(0..safe_to_remove);
+                self.read_position = self.read_position.saturating_sub(safe_to_remove);
+                
+                debug!(
+                    "Circular buffer: removed {} bytes (safe removal), remaining: {}, read_pos adjusted to: {}",
+                    safe_to_remove,
+                    self.data.len(),
+                    self.read_position
+                );
             } else {
-                // Clear entire buffer if we need to remove more than we have
-                self.data.clear();
-                self.read_position = 0;
+                // If we can't safely remove enough data, we might need to grow the buffer
+                // or wait for more data to be consumed
+                warn!(
+                    "Circular buffer: Cannot safely remove data (read_pos: {}, need to remove: {})",
+                    self.read_position,
+                    bytes_to_remove
+                );
+                
+                // If the buffer is really full and we can't remove safely, 
+                // we might need to increase buffer size temporarily or return an error
+                if total_needed > self.max_buffer_size * 2 {
+                    return Err(DabError::Io(std::io::Error::new(
+                        std::io::ErrorKind::WriteZero,
+                        "Buffer overflow: cannot safely make room for new data",
+                    )));
+                }
             }
-
-            debug!(
-                "Circular buffer: removed {} bytes, remaining: {}",
-                bytes_to_remove,
-                self.data.len()
-            );
         }
 
         self.data.extend_from_slice(data);
         self.write_position += data.len();
         debug!(
-            "Written {} bytes to circular buffer, total: {}",
+            "Written {} bytes to circular buffer, total: {}, write_pos: {}, read_pos: {}",
             data.len(),
-            self.data.len()
+            self.data.len(),
+            self.write_position,
+            self.read_position
         );
         Ok(())
     }
@@ -771,12 +812,17 @@ impl ByteBuffer {
     }
 
     fn read_at_position_linear(&self, position: usize, buf: &mut [u8]) -> std::io::Result<usize> {
+        use log::debug;
+        
         if position >= self.data.len() {
+            debug!("read_at_position_linear: EOF (pos={}, len={})", position, self.data.len());
             return Ok(0); // EOF
         }
 
         let available = self.data.len() - position;
         let to_read = buf.len().min(available);
+        
+        debug!("read_at_position_linear: Reading {} bytes from position {}", to_read, position);
 
         if to_read > 0 {
             buf[..to_read].copy_from_slice(&self.data[position..position + to_read]);
@@ -790,11 +836,19 @@ impl ByteBuffer {
         global_position: usize,
         buf: &mut [u8],
     ) -> std::io::Result<usize> {
+        use log::debug;
+        
         // For circular buffer, we need to map global position to buffer position
         let buffer_start_position = self.write_position.saturating_sub(self.data.len());
+        
+        debug!(
+            "read_at_position_circular: global_pos={}, buffer_start={}, write_pos={}, data_len={}",
+            global_position, buffer_start_position, self.write_position, self.data.len()
+        );
 
         if global_position < buffer_start_position {
             // Requested position is before our current buffer window
+            debug!("read_at_position_circular: Position {} is before buffer window (starts at {})", global_position, buffer_start_position);
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "Position is before current buffer window",
@@ -803,16 +857,20 @@ impl ByteBuffer {
 
         let buffer_position = global_position - buffer_start_position;
         if buffer_position >= self.data.len() {
+            debug!("read_at_position_circular: EOF or beyond buffer (buffer_pos={}, data_len={})", buffer_position, self.data.len());
             return Ok(0); // EOF or beyond current buffer
         }
 
         let available = self.data.len() - buffer_position;
         let to_read = buf.len().min(available);
+        
+        debug!("read_at_position_circular: Reading {} bytes from buffer position {}", to_read, buffer_position);
 
         if to_read > 0 {
             buf[..to_read].copy_from_slice(&self.data[buffer_position..buffer_position + to_read]);
         }
 
+        debug!("read_at_position_circular: Successfully read {} bytes", to_read);
         Ok(to_read)
     }
 
@@ -872,7 +930,7 @@ mod tests {
 
     #[test]
     async fn test_streaming_read_write() {
-        let mut source = StreamingAudioSource::new(0, 10); // 0 min for testing, 10MB max
+        let source = StreamingAudioSource::new(0, 10); // 0 min for testing, 10MB max
 
         let test_data = b"Test streaming data";
         source.write_data(test_data).await.unwrap();
@@ -883,6 +941,134 @@ mod tests {
 
         assert_eq!(bytes_read, test_data.len());
         assert_eq!(&read_buf[..bytes_read], test_data);
+    }
+
+    #[test]
+    async fn test_linear_buffer_behavior() {
+        let source = StreamingAudioSource::new(0, 1); // 0 min, 1MB max for testing
+        
+        // Write data that fits within buffer size
+        let chunk_size = 256 * 1024; // 256KB chunks
+        let chunk1 = vec![1u8; chunk_size];
+        let chunk2 = vec![2u8; chunk_size];
+        let chunk3 = vec![3u8; chunk_size];
+        let chunk4 = vec![4u8; chunk_size];
+        
+        source.write_data(&chunk1).await.unwrap();
+        source.write_data(&chunk2).await.unwrap();
+        source.write_data(&chunk3).await.unwrap();
+        source.write_data(&chunk4).await.unwrap();
+        
+        // This should succeed as we're at exactly 1MB
+        assert_eq!(source.get_available_bytes().await, 4 * chunk_size);
+        
+        // Test reading from buffer
+        let mut read_buf = vec![0u8; 1024];
+        let mut source_clone = source.clone();
+        let result = source_clone.read(&mut read_buf);
+        
+        // Should succeed with linear buffer
+        match result {
+            Ok(bytes_read) => {
+                assert_eq!(bytes_read, 1024);
+                // First chunk should contain all 1s
+                assert!(read_buf.iter().all(|&b| b == 1));
+            }
+            Err(e) => {
+                panic!("Linear buffer read failed unexpectedly: {}", e);
+            }
+        }
+    }
+
+    #[test]
+    async fn test_sync_read_with_minimal_data() {
+        let source = StreamingAudioSource::new(0, 10); // 0 min for testing
+        
+        // Write minimal amount of data
+        let test_data = b"Small";
+        source.write_data(test_data).await.unwrap();
+        
+        // Try sync read
+        let mut source_clone = source.clone();
+        let mut read_buf = vec![0u8; test_data.len()];
+        
+        match source_clone.read(&mut read_buf) {
+            Ok(bytes_read) => {
+                assert_eq!(bytes_read, test_data.len());
+                assert_eq!(&read_buf[..bytes_read], test_data);
+            }
+            Err(e) => {
+                panic!("Sync read failed unexpectedly: {}", e);
+            }
+        }
+    }
+
+    #[test]
+    async fn test_empty_buffer_behavior() {
+        let source = StreamingAudioSource::new(0, 10);
+        
+        // Try reading from empty buffer
+        let mut source_clone = source.clone();
+        let mut read_buf = vec![0u8; 1024];
+        
+        match source_clone.read(&mut read_buf) {
+            Ok(bytes_read) => {
+                // Should read 0 bytes or fail
+                assert_eq!(bytes_read, 0);
+            }
+            Err(e) => {
+                // Should fail with WouldBlock
+                assert!(e.kind() == std::io::ErrorKind::WouldBlock);
+            }
+        }
+    }
+
+    #[test]
+    async fn test_download_complete_eof() {
+        let source = StreamingAudioSource::new(0, 10);
+        
+        // Write some data
+        let test_data = b"Test data";
+        source.write_data(test_data).await.unwrap();
+        
+        // Mark download as complete
+        source.mark_complete(test_data.len());
+        
+        // Read all data
+        let mut source_clone = source.clone();
+        let mut read_buf = vec![0u8; test_data.len()];
+        let bytes_read = source_clone.read(&mut read_buf).unwrap();
+        
+        assert_eq!(bytes_read, test_data.len());
+        assert_eq!(&read_buf, test_data);
+        
+        // Try reading again - should return 0 (EOF)
+        let mut read_buf2 = vec![0u8; 1024];
+        let bytes_read2 = source_clone.read(&mut read_buf2).unwrap();
+        assert_eq!(bytes_read2, 0);
+    }
+
+    #[test]
+    async fn test_basic_streaming_functionality() {
+        let source = StreamingAudioSource::new(0, 10);
+        
+        // Write test audio-like data (simulate FLAC header)
+        let flac_header = b"fLaCaaaabbbbccccdddd";
+        source.write_data(flac_header).await.unwrap();
+        
+        // Test sync read directly 
+        let mut source_clone = source.clone();
+        let mut read_buf = vec![0u8; flac_header.len()];
+        
+        match source_clone.read(&mut read_buf) {
+            Ok(bytes_read) => {
+                assert_eq!(bytes_read, flac_header.len());
+                assert_eq!(&read_buf[..bytes_read], flac_header);
+            }
+            Err(e) => {
+                panic!("Direct StreamingAudioSource read failed: {}", e);
+            }
+        }
     }
 }
 

@@ -19,7 +19,7 @@ You run in an environment where ast-grep is available; whenever a search require
             discography: ./resource/mock_discography_artistId_40226.json 
             album: ./resource/mock_album_albumId_0190295978044.json
 
-- 参考 /Users/yanyao/Projects/fork/librespot 项目的播放引擎设计, 使用 rodio backend 并实现完备的播放队列控制
+- 参考 /Users/yanyao/Projects/fork/librespot 项目的播放引擎设计, 使用 symphonia/cpal backend 并实现完备的播放队列控制
     - 支持流式加载本地和在线音频文件, 一边加载一边播放
     - 使用 tokio channel 作为通信机制, 确保播放服务为异步非阻塞模式运行, 与 ui 或者命令行交互时及时响应
     - 支持 dab play/pause/next/prev 等命令操作播放服务

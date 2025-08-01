@@ -70,12 +70,22 @@ impl StreamingWrapper {
 
 impl Read for StreamingWrapper {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        use log::{debug, warn};
+        
         // Clone the source for async operation
         let mut source_clone = (*self.source).clone();
 
+        debug!("StreamingWrapper: Attempting to read {} bytes", buf.len());
+
         // Try reading, but handle WouldBlock by waiting a bit
         match source_clone.read(buf) {
-            Ok(bytes_read) => Ok(bytes_read),
+            Ok(bytes_read) => {
+                debug!("StreamingWrapper: Successfully read {} bytes", bytes_read);
+                if bytes_read == 0 {
+                    debug!("StreamingWrapper: Read returned 0 bytes - checking if download complete: {}", self.source.is_download_complete());
+                }
+                Ok(bytes_read)
+            },
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 // For streaming, wait a short time and retry
                 std::thread::sleep(std::time::Duration::from_millis(10));
@@ -96,15 +106,20 @@ impl Read for StreamingWrapper {
 
                 // If still no data after waiting, check if download is complete
                 if self.source.is_download_complete() {
+                    warn!("StreamingWrapper: Download complete, returning EOF");
                     Ok(0) // EOF
                 } else {
+                    warn!("StreamingWrapper: Timeout waiting for streaming data after {} retries", retry_count);
                     Err(std::io::Error::new(
                         std::io::ErrorKind::TimedOut,
                         "Timeout waiting for streaming data",
                     ))
                 }
             }
-            Err(e) => Err(e),
+            Err(e) => {
+                warn!("StreamingWrapper: Read error: {}", e);
+                Err(e)
+            },
         }
     }
 }
@@ -230,18 +245,28 @@ impl AudioDecoder {
     }
 
     pub fn next_frame(&mut self) -> DabResult<Option<Vec<f32>>> {
+        use log::{debug, warn};
+        
         let packet = match self.format.next_packet() {
-            Ok(packet) => packet,
+            Ok(packet) => {
+                debug!("Successfully read packet for track {}", packet.track_id());
+                packet
+            },
             Err(symphonia::core::errors::Error::IoError(ref e))
                 if e.kind() == std::io::ErrorKind::UnexpectedEof =>
             {
+                warn!("next_frame: Reached EOF, returning None");
                 return Ok(None);
             }
-            Err(e) => return Err(DabError::Decode(format!("Failed to read packet: {}", e))),
+            Err(e) => {
+                warn!("next_frame: Failed to read packet: {}", e);
+                return Err(DabError::Decode(format!("Failed to read packet: {}", e)));
+            },
         };
 
         // Skip packets that don't belong to our track
         if packet.track_id() != self.track_id {
+            debug!("Skipping packet for track {} (looking for {})", packet.track_id(), self.track_id);
             return self.next_frame();
         }
 
@@ -252,7 +277,10 @@ impl AudioDecoder {
 
         let decoded = decoder
             .decode(&packet)
-            .map_err(|e| DabError::Decode(format!("Failed to decode packet: {}", e)))?;
+            .map_err(|e| {
+                warn!("next_frame: Failed to decode packet: {}", e);
+                DabError::Decode(format!("Failed to decode packet: {}", e))
+            })?;
 
         // Convert to f32 samples
         let spec = decoded.spec();
@@ -260,8 +288,10 @@ impl AudioDecoder {
 
         let mut sample_buffer = SampleBuffer::<f32>::new(duration, *spec);
         sample_buffer.copy_interleaved_ref(decoded);
-
-        Ok(Some(sample_buffer.samples().to_vec()))
+        
+        let samples = sample_buffer.samples().to_vec();
+        debug!("next_frame: Decoded {} samples", samples.len());
+        Ok(Some(samples))
     }
 
     pub fn seek(&mut self, position_ms: u32) -> DabResult<()> {
