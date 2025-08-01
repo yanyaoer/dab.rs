@@ -3,7 +3,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use log::{debug, error, info};
+use log::{error, info};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
@@ -18,7 +18,7 @@ use tokio::sync::mpsc;
 
 use super::components::UnifiedList;
 use super::handlers::{KeyHandler, NavigationAction};
-use crate::async_client::{AsyncNetworkClient, NetworkManager};
+use crate::async_client::AsyncNetworkClient;
 use crate::cache::Cache;
 use crate::error::{DabError, DabResult};
 use crate::library::Library;
@@ -68,6 +68,10 @@ pub struct TuiApp {
     search_query: String,
     search_results_raw: Vec<DabTrack>, // Store original DabTrack data
     search_type: SearchType,
+    // Preserved search state for view switching
+    last_search_query: String,
+    last_search_type: SearchType,
+    search_results_preserved: Vec<Track>, // Preserve search results when switching views
     // Async search state
     search_state: SearchState,
     search_rx: mpsc::UnboundedReceiver<SearchResult>,
@@ -159,6 +163,10 @@ impl TuiApp {
             search_query: String::new(),
             search_results_raw: Vec::new(),
             search_type: SearchType::Track,
+            // Preserved search state for view switching
+            last_search_query: String::new(),
+            last_search_type: SearchType::Track,
+            search_results_preserved: Vec::new(),
             // Async search state
             search_state: SearchState::Idle,
             search_rx,
@@ -247,13 +255,14 @@ impl TuiApp {
             if self.header_scroll_delay == 0 {
                 let track_text = self.format_current_track_info();
                 let app_title = "Dab Music Player";
-                let title_width = app_title.len();
+                let title_width = app_title.chars().count(); // Use char count for Unicode safety
 
                 // Use a reasonable default width - will be calculated dynamically in render_header
                 let available_width: usize = 80; // This will be calculated dynamically in render_header
                 let remaining_width = available_width.saturating_sub(title_width + 3); // +3 for " | " separator
+                let track_text_chars: Vec<char> = track_text.chars().collect();
 
-                if track_text.len() > remaining_width {
+                if track_text_chars.len() > remaining_width {
                     match self.header_scroll_direction {
                         0 => {
                             // Start scrolling right after a pause
@@ -262,7 +271,7 @@ impl TuiApp {
                         }
                         1 => {
                             // Scrolling right
-                            if self.header_scroll_offset + remaining_width >= track_text.len() {
+                            if self.header_scroll_offset + remaining_width >= track_text_chars.len() {
                                 self.header_scroll_direction = -1; // Start scrolling left
                             } else {
                                 self.header_scroll_offset += 1;
@@ -359,22 +368,23 @@ impl TuiApp {
 
         // Fixed left title
         let app_title = "Dab Music Player";
-        let title_width = app_title.len();
+        let title_width = app_title.chars().count(); // Use char count for Unicode safety
 
         // Calculate remaining width for track info
         let remaining_width = available_width.saturating_sub(title_width + 3); // +3 for " | " separator
 
         let display_text = if let Some(_) = &self.current_track {
             let track_info = self.format_current_track_info();
+            let track_info_chars: Vec<char> = track_info.chars().collect();
 
-            if track_info.len() <= remaining_width {
+            if track_info_chars.len() <= remaining_width {
                 // Track info fits, no scrolling needed
                 format!("{} | {}", app_title, track_info)
             } else {
                 // Track info is too long, use scrolling for the track part only
-                let end_pos = (self.header_scroll_offset + remaining_width).min(track_info.len());
-                let scrolled_track_info = &track_info[self.header_scroll_offset..end_pos];
-                format!("{} | {}", app_title, scrolled_track_info)
+                let end_pos = (self.header_scroll_offset + remaining_width).min(track_info_chars.len());
+                let scrolled_chars: String = track_info_chars[self.header_scroll_offset..end_pos].iter().collect();
+                format!("{} | {}", app_title, scrolled_chars)
             }
         } else {
             // No track playing, just show the app title
@@ -436,42 +446,47 @@ impl TuiApp {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3), // Search input
-                Constraint::Length(3), // Search type selector
+                Constraint::Length(3), // Combined search input with type
                 Constraint::Min(0),    // Search results
             ])
             .split(area);
 
-        // Search input box
-        let search_text = if self.search_mode {
-            format!("Search: {}_", self.search_query)
+        // Combined search input and type on one line
+        let combined_text = if self.search_mode {
+            format!(
+                "Type: {} (Press Tab) | Query: {}_",
+                self.search_type.display_name().to_lowercase(),
+                self.search_query
+            )
+        } else if !self.last_search_query.is_empty() {
+            format!(
+                "Type: {} (Press Tab) | Query: {} (Press '/' to search again)",
+                self.last_search_type.display_name().to_lowercase(),
+                self.last_search_query
+            )
         } else {
-            "Press '/' to search".to_string()
+            format!(
+                "Type: {} (Press Tab) | Press '/' to search",
+                self.search_type.display_name().to_lowercase()
+            )
         };
 
-        let search_input = Paragraph::new(search_text)
+        let search_input = Paragraph::new(combined_text)
             .style(if self.search_mode {
                 Style::default().fg(Color::Yellow)
+            } else if !self.last_search_query.is_empty() {
+                Style::default().fg(Color::Green)
             } else {
                 Style::default().fg(Color::Gray)
             })
             .block(Block::default().title("Search Music").borders(Borders::ALL));
         f.render_widget(search_input, chunks[0]);
 
-        // Search type selector
-        let type_text = format!(
-            "Type: {} (Press Tab to change: Track → Album → Artist)",
-            self.search_type.display_name()
-        );
-        let type_selector = Paragraph::new(type_text)
-            .style(Style::default().fg(Color::Cyan))
-            .block(Block::default().title("Search Type").borders(Borders::ALL));
-        f.render_widget(type_selector, chunks[1]);
-
         // Search results using unified list
         if !self.main_list.items.is_empty() {
-            self.main_list.render(f, chunks[2]);
-        } else if !self.search_mode {
+            self.main_list.render(f, chunks[1]);
+        } else if !self.search_mode && self.last_search_query.is_empty() {
+            // Only show help when no previous search exists
             let cache_info = if let Ok(cache) = self.cache.try_read() {
                 format!(
                     "\nCache: {} tracks ({} MB)\nID3 metadata: tracks with tags",
@@ -482,11 +497,14 @@ impl TuiApp {
                 String::new()
             };
 
-            let help_text = Paragraph::new(format!("Press '/' to start searching\nPress Enter to select a track\nPress Esc to go back{}", cache_info))
-                .block(Block::default()
-                    .title("Search Help")
-                    .borders(Borders::ALL))
-                .style(Style::default().fg(Color::Gray));
+            let help_text = Paragraph::new(format!(
+                "Press '/' to start searching\nPress Enter to select a track\nPress Esc to go back{}", 
+                cache_info
+            ))
+            .block(Block::default()
+                .title("Search Help")
+                .borders(Borders::ALL))
+            .style(Style::default().fg(Color::Gray));
             f.render_widget(help_text, chunks[1]);
         }
     }
@@ -617,6 +635,8 @@ impl TuiApp {
                 KeyCode::Enter => {
                     // Perform search
                     if !self.search_query.is_empty() {
+                        // Clear preserved results when starting a new search
+                        self.search_results_preserved.clear();
                         self.perform_search().await?;
                     }
                     self.search_mode = false;
@@ -992,11 +1012,18 @@ impl TuiApp {
                 // Queue is handled separately in refresh_queue_list()
             }
             View::Search => {
-                // Initialize empty search results, actual results are updated in perform_search()
-                if self.main_list.items.is_empty() {
-                    self.main_list =
-                        UnifiedList::new(format!("Search: {}", self.search_type.display_name()))
-                            .with_help(true);
+                // Restore preserved search results or show empty list
+                if !self.search_results_preserved.is_empty() {
+                    self.main_list = UnifiedList::new(format!(
+                        "Search Results: {}",
+                        self.last_search_type.display_name()
+                    ))
+                    .with_tracks(self.search_results_preserved.clone())
+                    .with_help(true);
+                } else {
+                    // Initialize empty search results - show empty list until search is performed
+                    self.main_list = UnifiedList::new(format!("Search: {}", self.search_type.display_name()));
+                    // Don't add help text for search view initially
                 }
             }
             View::DetailedAlbum => {
@@ -1029,6 +1056,10 @@ impl TuiApp {
     }
 
     async fn handle_search_result(&mut self, search_result: SearchResult) {
+        // Preserve search state for view switching
+        self.last_search_query = search_result.query.clone();
+        self.last_search_type = search_result.search_type.clone();
+        
         // Update main list with search results
         match search_result.search_type {
             SearchType::Track => {
@@ -1036,16 +1067,66 @@ impl TuiApp {
                     "Search Results: {}",
                     search_result.search_type.display_name()
                 ))
-                .with_tracks(search_result.tracks)
+                .with_tracks(search_result.tracks.clone())
                 .with_help(true);
+                
+                // Preserve the results for view switching
+                self.search_results_preserved = search_result.tracks;
             }
-            SearchType::Album | SearchType::Artist => {
+            SearchType::Album => {
                 self.main_list = UnifiedList::new(format!(
                     "Search Results: {}",
                     search_result.search_type.display_name()
                 ))
-                .with_tracks(search_result.tracks)
+                .with_tracks(search_result.tracks.clone())
                 .with_help(true);
+                
+                // Preserve the results for view switching
+                self.search_results_preserved = search_result.tracks;
+            }
+            SearchType::Artist => {
+                // For artist search, check if we have only one unique artist
+                let unique_artists: std::collections::HashSet<String> = search_result.tracks
+                    .iter()
+                    .filter_map(|track| track.artist_id.clone())
+                    .collect();
+
+                if unique_artists.len() == 1 {
+                    // Only one artist found, auto-navigate to discography
+                    let artist_id = unique_artists.into_iter().next().unwrap();
+                    info!("Only one artist found in search, auto-navigating to discography: {}", artist_id);
+                    
+                    match self.network_client.get_artist_discography(artist_id).await {
+                        Ok((artist, albums)) => {
+                            self.detailed_artist = Some(artist);
+                            self.artist_albums = albums;
+                            self.switch_view(View::ArtistDiscography).await;
+                            self.status_message = Some(format!(
+                                "Auto-loaded discography for '{}'",
+                                search_result.query
+                            ));
+                            return;
+                        }
+                        Err(e) => {
+                            self.status_message = Some(format!(
+                                "Failed to load discography: {}",
+                                e
+                            ));
+                            // Fall back to showing artist list
+                        }
+                    }
+                }
+                
+                // Multiple artists or auto-navigation failed, show artist list
+                self.main_list = UnifiedList::new(format!(
+                    "Search Results: {}",
+                    search_result.search_type.display_name()
+                ))
+                .with_tracks(search_result.tracks.clone())
+                .with_help(true);
+                
+                // Preserve the results for view switching
+                self.search_results_preserved = search_result.tracks;
             }
         }
 
@@ -1055,14 +1136,17 @@ impl TuiApp {
         // Update search state
         self.search_state = SearchState::Completed;
 
-        let cached_count = self.count_cached_tracks().await;
-        self.status_message = Some(format!(
-            "Found {} {} for '{}' ({} cached)",
-            self.main_list.items.len(),
-            search_result.search_type.display_name().to_lowercase(),
-            search_result.query,
-            cached_count
-        ));
+        // Only show cached count for non-artist auto-navigation cases
+        if search_result.search_type != SearchType::Artist || self.current_view == View::Search {
+            let cached_count = self.count_cached_tracks().await;
+            self.status_message = Some(format!(
+                "Found {} {} for '{}' ({} cached)",
+                self.main_list.items.len(),
+                search_result.search_type.display_name().to_lowercase(),
+                search_result.query,
+                cached_count
+            ));
+        }
     }
 
     async fn perform_search(&mut self) -> DabResult<()> {
@@ -1214,38 +1298,47 @@ impl TuiApp {
                     .await?;
 
                 let mut tracks = Vec::new();
+                let mut seen_artist_ids = std::collections::HashSet::new();
 
-                // Update to handle new search result structure
+                // Update to handle new search result structure with deduplication
                 for item in search_result.get_results() {
                     match item {
                         crate::search::SearchResultItem::Artist(artist) => {
-                            tracks.push(Track {
-                                id: artist.id.clone(),
-                                title: format!("[Artist] {}", artist.name),
-                                artist: artist.name.clone(),
-                                album: format!("{} albums", artist.albums_count.unwrap_or(0)),
-                                duration_ms: 0,
-                                local_path: None,
-                                cover_url: artist.image.as_ref().and_then(|img| img.large.clone()),
-                                track_id: None,
-                                artist_id: Some(artist.id.clone()),
-                                album_id: None,
-                            });
+                            // Use artist ID for deduplication
+                            if seen_artist_ids.insert(artist.id.clone()) {
+                                tracks.push(Track {
+                                    id: artist.id.clone(),
+                                    title: format!("[Artist] {}", artist.name),
+                                    artist: artist.name.clone(),
+                                    album: format!("{} albums", artist.albums_count.unwrap_or(0)),
+                                    duration_ms: 0,
+                                    local_path: None,
+                                    cover_url: artist.image.as_ref().and_then(|img| img.large.clone()),
+                                    track_id: None,
+                                    artist_id: Some(artist.id.clone()),
+                                    album_id: None,
+                                });
+                            }
                         }
                         crate::search::SearchResultItem::Track(track) => {
                             // For artist search, create a pseudo-artist from track info
-                            tracks.push(Track {
-                                id: track.id.clone(),
-                                title: format!("[Artist] {}", track.artist),
-                                artist: track.artist.clone(),
-                                album: "From track search".to_string(),
-                                duration_ms: 0,
-                                local_path: None,
-                                cover_url: None,
-                                track_id: None,
-                                artist_id: track.artist_id.clone(),
-                                album_id: None,
-                            });
+                            // Use artist_id for deduplication if available, otherwise fall back to artist name
+                            let dedup_key = track.artist_id.clone().unwrap_or_else(|| format!("track_artist_{}", track.artist));
+                            
+                            if seen_artist_ids.insert(dedup_key.clone()) {
+                                tracks.push(Track {
+                                    id: track.artist_id.clone().unwrap_or_else(|| track.id.clone()),
+                                    title: format!("[Artist] {}", track.artist),
+                                    artist: track.artist.clone(),
+                                    album: "From track search".to_string(),
+                                    duration_ms: 0,
+                                    local_path: None,
+                                    cover_url: None,
+                                    track_id: None,
+                                    artist_id: track.artist_id.clone().or_else(|| Some(dedup_key)),
+                                    album_id: None,
+                                });
+                            }
                         }
                         _ => {
                             log::debug!("Skipping non-artist/track item in artist search");

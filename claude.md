@@ -38,8 +38,8 @@ You run in an environment where ast-grep is available; whenever a search require
 - TUI header 内显示当前播放的曲目信息和 duration，播放信息的文本右对齐，长度超过当前窗口时左右滚动显示
     | Dab Music Player |                 track - album - artist | duration |
 - Library 内显示之前收藏的专辑，显示为 aritst - album，支持快捷键播放当前专辑以及查看歌手的 discography 信息
-- 主意ui组件的复用和按键绑定，预期在所有的 album 列表和歌曲列表(包含播放队列和favorite)                                        │
-│   都支持跳转到专辑详情页和歌手的discog页，回车键的行为统一为播放当前歌曲或者整张专辑   
+- 注意ui组件的复用和按键绑定，预期在所有的 album 列表和歌曲列表(包含播放队列和favorite)都支持跳转到专辑详情页和歌手的discog页，回车键的行为统一为播放当前歌曲或者整张专辑   
+- 搜索结果列表，当没有进行搜索时展示为空列表，当 search type == artist，请对搜索结果的 artistId 进行去重，如果只有一位情况下自动展示对应的 discog 页面，结果有多位artist则显示为歌手列表
 
 - 在任意界面的歌曲列表上, 快捷键设置
     -  @resource/openapi.yaml 使用api里的 discography 和 album 接口, 
