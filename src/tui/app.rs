@@ -50,6 +50,7 @@ pub struct TuiApp {
     key_handler: KeyHandler,
     should_quit: bool,
     current_view: View,
+    view_history: Vec<View>, // Navigation history stack
     // Unified list components
     main_list: UnifiedList,
     queue_list: UnifiedList,
@@ -145,6 +146,7 @@ impl TuiApp {
             key_handler,
             should_quit: false,
             current_view: View::Library,
+            view_history: Vec::new(), // Initialize empty history stack
             // Unified list components
             main_list: UnifiedList::new("Library".to_string()),
             queue_list: UnifiedList::new("Queue".to_string()),
@@ -710,10 +712,10 @@ impl TuiApp {
                 }
             }
 
-            // View switching
-            KeyCode::Char('1') => self.switch_view(View::Library).await,
-            KeyCode::Char('2') => self.switch_view(View::Queue).await,
-            KeyCode::Char('3') => self.switch_view(View::Search).await,
+            // View switching - use switch_to_main_view to clear history
+            KeyCode::Char('1') => self.switch_to_main_view(View::Library).await,
+            KeyCode::Char('2') => self.switch_to_main_view(View::Queue).await,
+            KeyCode::Char('3') => self.switch_to_main_view(View::Search).await,
 
             // Player controls
             KeyCode::Char(' ') => self.toggle_playback().await?,
@@ -750,15 +752,14 @@ impl TuiApp {
                 }
             }
             KeyCode::Esc => {
-                // Go back to previous view
-                match self.current_view {
-                    View::DetailedAlbum | View::ArtistDiscography => {
-                        self.switch_view(View::Search).await;
-                    }
-                    View::AlbumDetail => {
-                        self.switch_view(View::Library).await;
-                    }
-                    _ => {}
+                // Go back to previous view using history stack
+                if self.search_mode {
+                    // If in search mode, exit search mode first
+                    self.search_mode = false;
+                    self.search_query.clear();
+                } else {
+                    // Use navigation history to go back
+                    self.go_back().await;
                 }
             }
             KeyCode::Char('a') => {
@@ -971,10 +972,51 @@ impl TuiApp {
 
     async fn switch_view(&mut self, view: View) {
         if self.current_view != view {
+            // Push current view to history stack before switching (but not for manual navigation like 1/2/3 keys)
+            if !matches!(view, View::Library | View::Queue | View::Search) {
+                self.view_history.push(self.current_view.clone());
+            }
+            
             self.current_view = view.clone();
             self.refresh_main_list().await;
 
             match view {
+                View::Queue => {
+                    self.refresh_queue().await;
+                }
+                _ => {
+                    // Lists reset their own selection
+                }
+            }
+        }
+    }
+
+    async fn switch_to_main_view(&mut self, view: View) {
+        // Clear history when switching to main views (Library, Queue, Search)
+        self.view_history.clear();
+        
+        if self.current_view != view {
+            self.current_view = view.clone();
+            self.refresh_main_list().await;
+
+            match view {
+                View::Queue => {
+                    self.refresh_queue().await;
+                }
+                _ => {
+                    // Lists reset their own selection
+                }
+            }
+        }
+    }
+
+    async fn go_back(&mut self) {
+        if let Some(previous_view) = self.view_history.pop() {
+            // Switch back to previous view without adding to history again
+            self.current_view = previous_view.clone();
+            self.refresh_main_list().await;
+
+            match previous_view {
                 View::Queue => {
                     self.refresh_queue().await;
                 }

@@ -52,6 +52,7 @@ You run in an environment where ast-grep is available; whenever a search require
     - 按键 a 添加当前歌曲到播放队列的下一首
     - 按键 A 清空当前播放队列, 将当前界面的所有歌曲写入播放队列
     - 按键 m 将当前专辑加入 library，持久化记录每次启动 tui 时自动加载
+    - 按键 esc 返回前一个 view
 
 - 每次修改业务逻辑时保持 ./README.md 和 ./TUI_SHORTCUTS.md 内容的及时有效更新
     - 使用 asciiart 风格将各 view 的 UI 绘制在 README 顶部的标题下方
