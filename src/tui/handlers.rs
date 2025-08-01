@@ -12,6 +12,7 @@ pub enum NavigationAction {
     AddTrackNext(Track),
     AddAlbumNext(Vec<Track>),
     AddToFavorites(DabAlbum),
+    ClearAndPlayAll(Vec<Track>), // Clear queue and add all tracks from current list
 }
 
 pub struct KeyHandler;
@@ -126,25 +127,26 @@ impl KeyHandler {
         list: &UnifiedList,
         network_client: &AsyncNetworkClient,
     ) -> DabResult<Option<NavigationAction>> {
-        if let Some(item) = list.get_selected_item() {
+        let mut all_tracks = Vec::new();
+
+        // Collect all tracks from the current list
+        for item in &list.items {
             match item {
                 ListItemType::Track(track) => {
-                    // For a single track, add just that track
-                    return Ok(Some(NavigationAction::AddTrackNext(track.clone())));
-                }
-                ListItemType::Album(_album) => {
-                    // Library albums don't have IDs, can't load them
-                    return Ok(None);
+                    // Skip album/artist entries in search results
+                    if !track.title.starts_with("[Album]") && !track.title.starts_with("[Artist]") {
+                        all_tracks.push(track.clone());
+                    }
                 }
                 ListItemType::FavoriteAlbum(album) => {
-                    // Load album details and add all tracks
+                    // Load album details and get all tracks
                     if let Ok(dab_album) = network_client.get_album(album.id.clone()).await {
                         if let Some(tracks) = &dab_album.tracks {
                             let player_tracks: Vec<Track> = tracks
                                 .iter()
                                 .map(|dab_track| Track::from_dab_track(dab_track))
                                 .collect();
-                            return Ok(Some(NavigationAction::AddAlbumNext(player_tracks)));
+                            all_tracks.extend(player_tracks);
                         }
                     }
                 }
@@ -154,15 +156,24 @@ impl KeyHandler {
                             .iter()
                             .map(|dab_track| Track::from_dab_track(dab_track))
                             .collect();
-                        return Ok(Some(NavigationAction::AddAlbumNext(player_tracks)));
+                        all_tracks.extend(player_tracks);
                     }
                 }
                 ListItemType::QueueTrack { track, .. } => {
-                    return Ok(Some(NavigationAction::AddTrackNext(track.clone())));
+                    all_tracks.push(track.clone());
+                }
+                ListItemType::Album(_album) => {
+                    // Library albums don't have IDs, can't load them
+                    // Skip these for now
                 }
             }
         }
-        Ok(None)
+
+        if !all_tracks.is_empty() {
+            Ok(Some(NavigationAction::ClearAndPlayAll(all_tracks)))
+        } else {
+            Ok(None)
+        }
     }
 
     pub async fn handle_m_key(

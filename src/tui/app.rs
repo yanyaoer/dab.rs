@@ -784,119 +784,29 @@ impl TuiApp {
                 }
             }
             KeyCode::Char('A') => {
-                // TODO: Implement using unified key handler
-                /*
-                match self.current_view {
-                    View::Library => {
-                        if let Some(selected_index) = self.list_state.selected() {
-                            let favorite_albums = self.library.get_favorite_albums();
-                            if let Some(favorite_album) = favorite_albums.get(selected_index) {
-                                let album_id = &favorite_album.id;
-                                match self.search_api.get_album_info(album_id).await {
-                                    Ok(detailed_album) => {
-                                        if let Some(tracks) = &detailed_album.tracks {
-                                            // Convert DabTrack to Track
-                                            let player_tracks: Vec<Track> = tracks
-                                                .iter()
-                                                .map(|dab_track| Track {
-                                                    id: dab_track.id.clone(),
-                                                    title: dab_track.title.clone(),
-                                                    artist: dab_track.artist.clone(),
-                                                    album: dab_track
-                                                        .album_title
-                                                        .clone()
-                                                        .unwrap_or_else(|| {
-                                                            detailed_album.title.clone()
-                                                        }),
-                                                    duration_ms: dab_track.duration.unwrap_or(0)
-                                                        * 1000,
-                                                    local_path: None,
-                                                    cover_url: dab_track.album_cover.clone(),
-                                                    track_id: Some(dab_track.id.clone()),
-                                                    artist_id: dab_track.artist_id.clone(),
-                                                    album_id: dab_track.album_id.clone(),
-                                                })
-                                                .collect();
+                let current_list = match self.current_view {
+                    View::Queue => &self.queue_list,
+                    _ => &self.main_list,
+                };
 
-                                            self.player
-                                                .clear_and_play_tracks(player_tracks)
-                                                .await?;
-                                            self.status_message = Some(format!(
-                                                "Playing all tracks from '{}'",
-                                                detailed_album.title
-                                            ));
-                                        } else {
-                                            self.status_message =
-                                                Some("No tracks found in album".to_string());
-                                        }
-                                    }
-                                    Err(e) => {
-                                        self.status_message =
-                                            Some(format!("Failed to load album details: {}", e));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    View::AlbumDetail => {
-                        if let Some(album) = self.selected_album.as_ref() {
-                            let tracks = self.library.get_tracks_by_album(&album.title);
-                            // Convert to track objects and pass them directly
-                            self.player.clear_and_play_tracks(tracks).await?;
-                            self.status_message = Some(format!(
-                                "Cleared queue and added all tracks from {}",
-                                album.title
-                            ));
-                        }
-                    }
-                    View::DetailedAlbum => {
-                        // Clear queue and add all tracks from detailed album
-                        if let Some(album) = &self.detailed_album {
-                            if let Some(tracks) = &album.tracks {
-                                // Convert DabTrack to Track objects
-                                let track_objects: Vec<Track> = tracks
-                                    .iter()
-                                    .map(|dab_track| Track::from_dab_track(dab_track))
-                                    .collect();
-
-                                self.player.clear_and_play_tracks(track_objects).await?;
+                if let Ok(Some(action)) = self
+                    .key_handler
+                    .handle_shift_a_key(current_list, &self.network_client)
+                    .await
+                {
+                    match action {
+                        NavigationAction::ClearAndPlayAll(tracks) => {
+                            if !tracks.is_empty() {
+                                self.player.clear_and_play_tracks(tracks.clone()).await?;
                                 self.status_message = Some(format!(
-                                    "Cleared queue and added all {} tracks from {}",
-                                    tracks.len(),
-                                    album.title
+                                    "Cleared queue and added {} tracks from current list",
+                                    tracks.len()
                                 ));
                             }
                         }
+                        _ => {}
                     }
-                    View::Search => {
-                        // Clear queue and add all search results (only tracks, not albums/artists)
-                        let track_results: Vec<Track> = self
-                            .search_results
-                            .iter()
-                            .filter(|track| {
-                                !track.title.starts_with("[Album]")
-                                    && !track.title.starts_with("[Artist]")
-                            })
-                            .cloned()
-                            .collect();
-
-                        if !track_results.is_empty() {
-                            self.player
-                                .clear_and_play_tracks(track_results.clone())
-                                .await?;
-                            self.status_message = Some(format!(
-                                "Cleared queue and added {} tracks from search results",
-                                track_results.len()
-                            ));
-                        }
-                    }
-                    View::ArtistDiscography => {
-                        // Clear queue and add all albums from artist (this might be too many tracks)
-                        self.status_message = Some("Use 'l' to select an album first, then 'A' to add all tracks from that album".to_string());
-                    }
-                    _ => {}
                 }
-                */
             }
 
             // Queue management keys - TODO: Implement with unified handlers
