@@ -1,8 +1,10 @@
 use log::{debug, error, info, warn};
 use reqwest::Client;
 use serde::Deserialize;
+use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
+use crate::api_cache::{ApiCache, CachedResponse};
 use crate::error::{DabError, DabResult};
 use crate::search::{DabAlbum, DabArtist, SearchResult};
 
@@ -11,6 +13,7 @@ use crate::search::{DabAlbum, DabArtist, SearchResult};
 pub struct AsyncClient {
     client: Client,
     base_url: String,
+    cache: Arc<ApiCache>,
 }
 
 /// Request types for different API operations
@@ -72,6 +75,7 @@ impl AsyncClient {
         Self {
             client: Client::new(),
             base_url: "https://dab.yeet.su/api".to_string(),
+            cache: Arc::new(ApiCache::new()),
         }
     }
 
@@ -79,6 +83,15 @@ impl AsyncClient {
         Self {
             client: Client::new(),
             base_url,
+            cache: Arc::new(ApiCache::new()),
+        }
+    }
+
+    pub fn new_with_cache(cache: Arc<ApiCache>) -> Self {
+        Self {
+            client: Client::new(),
+            base_url: "https://dab.yeet.su/api".to_string(),
+            cache,
         }
     }
 
@@ -109,29 +122,64 @@ impl AsyncClient {
         search_type: String,
         limit: u32,
     ) -> ApiResponse {
-        let url = format!("{}/search", self.base_url);
+        let url = format!("{}/search?q={}&type={}&limit={}", 
+            self.base_url, 
+            urlencoding::encode(&query), 
+            search_type, 
+            limit
+        );
 
-        match self
-            .client
-            .get(&url)
-            .query(&[
-                ("q", query.as_str()),
-                ("type", search_type.as_str()),
-                ("limit", &limit.to_string()),
-            ])
-            .send()
-            .await
-        {
-            Ok(response) => match response.json::<SearchResult>().await {
-                Ok(search_result) => {
-                    debug!("Search request successful for query: {}", query);
-                    ApiResponse::SearchResult(search_result)
+        // Check cache first (excluding stream URL requests from cache)
+        if let Some(cached_response) = self.cache.get(&url).await {
+            if let CachedResponse::SearchResult(search_result) = cached_response {
+                debug!("Returning cached search result for query: {}", query);
+                return ApiResponse::SearchResult(search_result);
+            }
+        }
+
+        // Make HTTP request
+        let mut request_builder = self.client.get(&url);
+        
+        // Add conditional request headers if cache entry exists
+        if let Some((header_name, header_value)) = self.cache.should_revalidate(&url).await {
+            request_builder = request_builder.header(&header_name, header_value);
+        }
+
+        match request_builder.send().await {
+            Ok(response) => {
+                let headers = response.headers().clone();
+                let status = response.status();
+
+                if status == reqwest::StatusCode::NOT_MODIFIED {
+                    // 304 Not Modified - update cache and return cached response
+                    self.cache.update_on_not_modified(&url, &headers).await;
+                    if let Some(cached_response) = self.cache.get(&url).await {
+                        if let CachedResponse::SearchResult(search_result) = cached_response {
+                            debug!("Returning revalidated cached search result for query: {}", query);
+                            return ApiResponse::SearchResult(search_result);
+                        }
+                    }
                 }
-                Err(e) => {
-                    error!("Failed to parse search response: {}", e);
-                    ApiResponse::Error(format!("Failed to parse search response: {}", e))
+
+                match response.json::<SearchResult>().await {
+                    Ok(search_result) => {
+                        debug!("Search request successful for query: {}", query);
+                        
+                        // Cache the response
+                        self.cache.put(
+                            url,
+                            CachedResponse::SearchResult(search_result.clone()),
+                            &headers,
+                        ).await;
+                        
+                        ApiResponse::SearchResult(search_result)
+                    }
+                    Err(e) => {
+                        error!("Failed to parse search response: {}", e);
+                        ApiResponse::Error(format!("Failed to parse search response: {}", e))
+                    }
                 }
-            },
+            }
             Err(e) => {
                 error!("Search request failed: {}", e);
                 ApiResponse::Error(format!("Search request failed: {}", e))
@@ -140,16 +188,40 @@ impl AsyncClient {
     }
 
     async fn handle_album_request(&self, album_id: String) -> ApiResponse {
-        let url = format!("{}/album", self.base_url);
+        let url = format!("{}/album?albumId={}", self.base_url, urlencoding::encode(&album_id));
 
-        match self
-            .client
-            .get(&url)
-            .query(&[("albumId", album_id.as_str())])
-            .send()
-            .await
-        {
+        // Check cache first
+        if let Some(cached_response) = self.cache.get(&url).await {
+            if let CachedResponse::AlbumInfo(album) = cached_response {
+                debug!("Returning cached album info for ID: {}", album_id);
+                return ApiResponse::AlbumInfo(album);
+            }
+        }
+
+        // Make HTTP request
+        let mut request_builder = self.client.get(&url);
+        
+        // Add conditional request headers if cache entry exists
+        if let Some((header_name, header_value)) = self.cache.should_revalidate(&url).await {
+            request_builder = request_builder.header(&header_name, header_value);
+        }
+
+        match request_builder.send().await {
             Ok(response) => {
+                let headers = response.headers().clone();
+                let status = response.status();
+
+                if status == reqwest::StatusCode::NOT_MODIFIED {
+                    // 304 Not Modified - update cache and return cached response
+                    self.cache.update_on_not_modified(&url, &headers).await;
+                    if let Some(cached_response) = self.cache.get(&url).await {
+                        if let CachedResponse::AlbumInfo(album) = cached_response {
+                            debug!("Returning revalidated cached album info for ID: {}", album_id);
+                            return ApiResponse::AlbumInfo(album);
+                        }
+                    }
+                }
+
                 #[derive(Deserialize)]
                 struct AlbumResponse {
                     album: DabAlbum,
@@ -158,6 +230,14 @@ impl AsyncClient {
                 match response.json::<AlbumResponse>().await {
                     Ok(album_response) => {
                         debug!("Album request successful for ID: {}", album_id);
+                        
+                        // Cache the response
+                        self.cache.put(
+                            url,
+                            CachedResponse::AlbumInfo(album_response.album.clone()),
+                            &headers,
+                        ).await;
+                        
                         ApiResponse::AlbumInfo(album_response.album)
                     }
                     Err(e) => {
@@ -174,16 +254,40 @@ impl AsyncClient {
     }
 
     async fn handle_discography_request(&self, artist_id: String) -> ApiResponse {
-        let url = format!("{}/discography", self.base_url);
+        let url = format!("{}/discography?artistId={}", self.base_url, urlencoding::encode(&artist_id));
 
-        match self
-            .client
-            .get(&url)
-            .query(&[("artistId", artist_id.as_str())])
-            .send()
-            .await
-        {
+        // Check cache first
+        if let Some(cached_response) = self.cache.get(&url).await {
+            if let CachedResponse::ArtistDiscography { artist, albums } = cached_response {
+                debug!("Returning cached discography for artist ID: {}", artist_id);
+                return ApiResponse::ArtistDiscography { artist, albums };
+            }
+        }
+
+        // Make HTTP request
+        let mut request_builder = self.client.get(&url);
+        
+        // Add conditional request headers if cache entry exists
+        if let Some((header_name, header_value)) = self.cache.should_revalidate(&url).await {
+            request_builder = request_builder.header(&header_name, header_value);
+        }
+
+        match request_builder.send().await {
             Ok(response) => {
+                let headers = response.headers().clone();
+                let status = response.status();
+
+                if status == reqwest::StatusCode::NOT_MODIFIED {
+                    // 304 Not Modified - update cache and return cached response
+                    self.cache.update_on_not_modified(&url, &headers).await;
+                    if let Some(cached_response) = self.cache.get(&url).await {
+                        if let CachedResponse::ArtistDiscography { artist, albums } = cached_response {
+                            debug!("Returning revalidated cached discography for artist ID: {}", artist_id);
+                            return ApiResponse::ArtistDiscography { artist, albums };
+                        }
+                    }
+                }
+
                 #[derive(Deserialize)]
                 struct DiscographyResponse {
                     artist: DabArtist,
@@ -192,10 +296,18 @@ impl AsyncClient {
 
                 match response.json::<DiscographyResponse>().await {
                     Ok(discog_response) => {
-                        debug!(
-                            "Discography request successful for artist ID: {}",
-                            artist_id
-                        );
+                        debug!("Discography request successful for artist ID: {}", artist_id);
+                        
+                        // Cache the response
+                        self.cache.put(
+                            url,
+                            CachedResponse::ArtistDiscography {
+                                artist: discog_response.artist.clone(),
+                                albums: discog_response.albums.clone(),
+                            },
+                            &headers,
+                        ).await;
+                        
                         ApiResponse::ArtistDiscography {
                             artist: discog_response.artist,
                             albums: discog_response.albums,
@@ -252,16 +364,44 @@ impl AsyncClient {
     }
 
     async fn handle_lyrics_request(&self, artist: String, title: String) -> ApiResponse {
-        let url = format!("{}/lyrics", self.base_url);
+        let url = format!("{}/lyrics?artist={}&title={}", 
+            self.base_url, 
+            urlencoding::encode(&artist), 
+            urlencoding::encode(&title)
+        );
 
-        match self
-            .client
-            .get(&url)
-            .query(&[("artist", artist.as_str()), ("title", title.as_str())])
-            .send()
-            .await
-        {
+        // Check cache first
+        if let Some(cached_response) = self.cache.get(&url).await {
+            if let CachedResponse::Lyrics { lyrics, unsynced } = cached_response {
+                debug!("Returning cached lyrics for {}: {}", artist, title);
+                return ApiResponse::Lyrics { lyrics, unsynced };
+            }
+        }
+
+        // Make HTTP request
+        let mut request_builder = self.client.get(&url);
+        
+        // Add conditional request headers if cache entry exists
+        if let Some((header_name, header_value)) = self.cache.should_revalidate(&url).await {
+            request_builder = request_builder.header(&header_name, header_value);
+        }
+
+        match request_builder.send().await {
             Ok(response) => {
+                let headers = response.headers().clone();
+                let status = response.status();
+
+                if status == reqwest::StatusCode::NOT_MODIFIED {
+                    // 304 Not Modified - update cache and return cached response
+                    self.cache.update_on_not_modified(&url, &headers).await;
+                    if let Some(cached_response) = self.cache.get(&url).await {
+                        if let CachedResponse::Lyrics { lyrics, unsynced } = cached_response {
+                            debug!("Returning revalidated cached lyrics for {}: {}", artist, title);
+                            return ApiResponse::Lyrics { lyrics, unsynced };
+                        }
+                    }
+                }
+
                 #[derive(Deserialize)]
                 struct LyricsResponse {
                     lyrics: String,
@@ -271,10 +411,25 @@ impl AsyncClient {
                 match response.json::<LyricsResponse>().await {
                     Ok(lyrics_response) => {
                         debug!("Lyrics request successful for {}: {}", artist, title);
-                        ApiResponse::Lyrics {
+                        
+                        let lyrics_data = ApiResponse::Lyrics {
                             lyrics: lyrics_response.lyrics,
                             unsynced: lyrics_response.unsynced.unwrap_or(true),
+                        };
+                        
+                        // Cache the response
+                        if let ApiResponse::Lyrics { lyrics, unsynced } = &lyrics_data {
+                            self.cache.put(
+                                url,
+                                CachedResponse::Lyrics {
+                                    lyrics: lyrics.clone(),
+                                    unsynced: *unsynced,
+                                },
+                                &headers,
+                            ).await;
                         }
+                        
+                        lyrics_data
                     }
                     Err(e) => {
                         error!("Failed to parse lyrics response: {}", e);

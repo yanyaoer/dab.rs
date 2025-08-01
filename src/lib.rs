@@ -1,3 +1,4 @@
+pub mod api_cache;
 pub mod async_client;
 pub mod cache;
 pub mod cli;

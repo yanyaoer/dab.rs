@@ -10,6 +10,7 @@ You run in an environment where ast-grep is available; whenever a search require
 - 适配 ./resource/openapi.yaml 支持在线曲库的搜索和下载接口
     - 按键 / 进行搜索
     - 支持命令 dab search 'query' 搜索歌曲
+    - 除了音频文件下载以外，曲库api请求的返回结果在内存里缓存，每次请求重复的url时遵循http协议的缓存过期策略决定是否从命中的缓存中返回，重启后清空 
     - @resource/openapi.yaml 搜索服务和对应的在线曲库的接口请参考这个文档描述来实现, 获取歌曲资源的 url 进行流式播放以及缓存管理
     - 使用 api 的 search, discography 和 album 接口, 获取对应的专辑列表和专辑详情
         - 接口返回的各种id类型经常会变化，可以在序列化时将 id,artistId,albumId,trackId 等统一转换为 string 类型处理
