@@ -26,3 +26,23 @@ A Unix-style command-line music player built with Rust, featuring streaming play
 └────────────────────────────────────────────────────────────────────────────────────────┘
 Player state: Playing
 ```
+
+## TUI Controls
+
+| Key | Action |
+|-----|--------|
+| `1` | goto favorite view |
+| `2` | goto queue view |
+| `3` | goto search view |
+| `Enter` | Play selected track/album |
+| `/` | Search for music |
+| `j`/`k` | Navigate up/down |
+| `l` | Show album details |
+| `h` | Show artist discography |
+| `a` | Add track to queue (next) |
+| `A` | Replace queue with current view's tracks |
+| `m` | Add album to favorites |
+| `Esc` | Go back to previous view |
+| `Space` | Play/pause |
+| `n` | Next track |
+| `p` | Previous track |
