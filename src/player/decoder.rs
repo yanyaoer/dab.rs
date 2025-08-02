@@ -87,32 +87,32 @@ impl Read for StreamingWrapper {
                 Ok(bytes_read)
             },
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                // For streaming, wait a short time and retry
-                std::thread::sleep(std::time::Duration::from_millis(10));
-
-                // Try again with longer timeout for better data availability
+                // Use minimal blocking to avoid UI freezing - key fix for UI responsiveness
+                // Only retry briefly with short delay instead of blocking for up to 1 second
                 let mut retry_count = 0;
-                while retry_count < 100 {
-                    // Max 1 second wait
+                while retry_count < 3 { // Reduced from 100 to 3 retries
+                    // Use much shorter sleep to minimize UI blocking
+                    std::thread::sleep(std::time::Duration::from_millis(1)); // Reduced from 10ms to 1ms
+                    
                     match source_clone.read(buf) {
                         Ok(bytes_read) => return Ok(bytes_read),
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(std::time::Duration::from_millis(10));
                             retry_count += 1;
                         }
                         Err(e) => return Err(e),
                     }
                 }
 
-                // If still no data after waiting, check if download is complete
+                // If still no data after minimal wait, check if download is complete
                 if self.source.is_download_complete() {
-                    warn!("StreamingWrapper: Download complete, returning EOF");
+                    debug!("StreamingWrapper: Download complete, returning EOF");
                     Ok(0) // EOF
                 } else {
-                    warn!("StreamingWrapper: Timeout waiting for streaming data after {} retries", retry_count);
+                    // Return WouldBlock immediately to avoid blocking UI thread
+                    debug!("StreamingWrapper: Data not ready after {} minimal retries, returning WouldBlock", retry_count);
                     Err(std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        "Timeout waiting for streaming data",
+                        std::io::ErrorKind::WouldBlock,
+                        "Stream data not immediately available",
                     ))
                 }
             }
