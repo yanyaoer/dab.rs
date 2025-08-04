@@ -170,3 +170,6 @@ Test API responses are provided in `resource/`:
 - **ID Handling**: Convert all API IDs to strings for consistency
 - **Stream URLs**: Always request fresh URLs before playback due to expiration
 - **Memory Management**: Use circular buffers for streaming to prevent memory leaks
+
+Only the test-runner agents can edit testcase in `./tests/` folder.
+when any code change, can not pass with the tests Running, we need review it and fix the code.
