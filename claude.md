@@ -1,60 +1,172 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 ## Tooling setup
 You run in an environment where ast-grep is available; whenever a search requires syntax-aware or structural matching, default to ast-grep --lang rust -p '<pattern>' (or set --lang appropriately) and avoid falling back to text-only tools like rg or grep unless I explicitly request a plain-text search.
 
-## Projects document
-参考 cmus 的交互界面 ./resource/cmus-2.4.3-osx.png 和 ./resource/openapi.yaml 接口描述, 编写一个 unix 风格的命令行音乐播放器
+## Development Commands
 
-- 按合理的日志分级输出调试信息和错误, 默认输出到 /tmp/dab_rs.log, 禁止 print 方式直接打印
-- 为模块核心功能提供健壮的单元测试, 每次改动后进行同步验证确保播放引擎正确工作
+### Building and Testing
+```bash
+# Build project (debug)
+cargo build
 
-- 适配 ./resource/openapi.yaml 支持在线曲库的搜索和下载接口
-    - 按键 / 进行搜索
-    - 支持命令 dab search 'query' 搜索歌曲
-    - 除了音频文件下载以外，曲库api请求的返回结果在内存里缓存，每次请求重复的url时遵循http协议的缓存过期策略决定是否从命中的缓存中返回，重启后清空 
-    - @resource/openapi.yaml 搜索服务和对应的在线曲库的接口请参考这个文档描述来实现, 获取歌曲资源的 url 进行流式播放以及缓存管理
-    - 使用 api 的 search, discography 和 album 接口, 获取对应的专辑列表和专辑详情
-        - 接口返回的各种id类型经常会变化，可以在序列化时将 id,artistId,albumId,trackId 等统一转换为 string 类型处理
-        - 返回的数据结构参考, 请用于编写测试用例，确保相关 model 的序列化正确:
-            search: ./resource/mock_search_q_coldplay_type_artist.json
-            discography: ./resource/mock_discography_artistId_40226.json 
-            album: ./resource/mock_album_albumId_0190295978044.json
+# Build for release
+cargo build --release
 
-- 参考 /Users/yanyao/Projects/fork/librespot 项目的播放引擎设计, 使用 symphonia/cpal backend 并实现完备的播放队列控制
-    - 支持流式加载本地和在线音频文件, 一边加载一边播放
-    - 使用 tokio channel 作为通信机制, 确保播放服务为异步非阻塞模式运行, 与 ui 或者命令行交互时及时响应
-    - 支持 dab play/pause/next/prev 等命令操作播放服务
-    - 支持 dab queue 'http://www.xiledradio.com/shows/XiledRadio-Show376.mp3' 添加本地文件和在线文件到播放列表
-    - stream url 有过期时间导致后续无法播放, 在播放列表应使用 track 信息记录和展示，进行播放或者预加载时再去请求 stream url 并支持流式播放
+# Run tests
+cargo test
 
-- 支持本地文件缓存, 优先读取和播放本地音频文件
-    - 缓存音频文件时, 将歌曲的id3相关信息以及唯一id等记录到 metadata, 用于在线查询或者专辑详情页的缓存状态判断
-    - 播放在线音频时, 缓存当前完整音频到本地缓存
-    - 如果播放队列的下一首歌曲没有缓存, 且当前歌曲已加载完成, 提前进行预加载
-    - 并在 library 中按照 id3 标签显示本地歌曲信息
-        - 以 artist - album - title 格式显示, 支持层级展开和收起
-    - 缓存过期清理，仅在 audio 类型文件上工作
+# Run specific test
+cargo test streaming
 
-- 支持 kitty 图片协议, 选中歌曲时将歌曲封面作为背景图片显示在右下角
-- 在封面图底部显示 TUI 风格的音频播放可视化效果
-- TUI header 内显示当前播放的曲目信息和 duration，播放信息的文本右对齐，长度超过当前窗口时左右滚动显示
-    | Dab Music Player |                 track - album - artist | duration |
-- Library 内显示之前收藏的专辑，显示为 aritst - album，支持快捷键播放当前专辑以及查看歌手的 discography 信息
-- 注意ui组件的复用和按键绑定，预期在所有的 album 列表和歌曲列表(包含播放队列和favorite)都支持跳转到专辑详情页和歌手的discog页，回车键的行为统一为播放当前歌曲或者整张专辑   
-- 搜索结果列表，当没有进行搜索时展示为空列表，当 search type == artist，请对搜索结果的 artistId 进行去重，如果只有一位情况下自动展示对应的 discog 页面，结果有多位artist则显示为歌手列表
+# Run with test output
+cargo test -- --nocapture
 
-- 在任意界面的歌曲列表上, 快捷键设置
-    -  @resource/openapi.yaml 使用api里的 discography 和 album 接口, 
-        - 按键 l 展示专辑的 summary, description, cover 信息和歌曲列表
-        - 按键 h 展示该歌手的介绍信息和专辑列表
-    - 按键 j 选择下一个条目
-    - 按键 k 选择上一个条目
-    - 按键 / 进行搜索
-    - 按键 a 添加当前歌曲到播放队列的下一首
-    - 按键 A 清空当前播放队列, 将当前界面的所有歌曲写入播放队列
-    - 按键 m 将当前专辑加入 library，持久化记录每次启动 tui 时自动加载
-    - 按键 esc 返回前一个 view
+# Format code (ALWAYS use before commits)
+cargo fmt
 
-- 每次修改业务逻辑时保持 ./README.md 和 ./TUI_SHORTCUTS.md 内容的及时有效更新
-    - 使用 asciiart 风格将各 view 的 UI 绘制在 README 顶部的标题下方
+# Lint code
+cargo clippy
 
-- 开发过程中使用 rustfmt 格式化代码, 即 cargo fmt
+# Check for errors without building
+cargo check
+```
+
+### Running the Application
+```bash
+# Start TUI interface
+cargo run
+
+# Run with specific commands
+cargo run -- search "query"
+cargo run -- play
+cargo run -- pause
+```
+
+## Project Architecture
+
+### High-Level Structure
+DAB is a terminal-based music player with three main architectural layers:
+
+1. **TUI Layer** (`src/tui/`): Ratatui-based terminal interface with event handling
+2. **Player Engine** (`src/player/`): Asynchronous audio playback engine using Tokio channels
+3. **API/Caching Layer** (`src/`): HTTP client for music API and local caching system
+
+### Core Modules
+
+#### Player Engine (`src/player/`)
+- **Async Architecture**: Built on Tokio with channel-based communication
+- **Streaming Support**: Real-time streaming with buffering via `streaming.rs` and `loader.rs`
+- **Queue Management**: Full queue control with repeat modes in `queue.rs`
+- **Audio Pipeline**: Symphonia decoder → Rodio sink pipeline in `engine.rs`
+- **Download Manager**: Background downloading and caching in `download_manager.rs`
+
+#### TUI System (`src/tui/`)
+- **Event-driven**: Crossterm events with async handling in `handlers.rs`
+- **Component Architecture**: Reusable UI components in `components.rs`
+- **State Management**: Centralized app state in `app.rs`
+- **Multiple Views**: Library, Queue, Search, Album Detail, Artist Discography
+
+#### API Integration (`src/`)
+- **HTTP Client**: Async reqwest-based client in `async_client.rs`
+- **Caching**: Multi-layer caching (API responses + audio files) in `cache.rs` and `api_cache.rs`
+- **Search**: Music API wrapper in `search.rs`
+- **Models**: Track/Album/Artist models with OpenAPI schema compatibility
+
+### Communication Patterns
+
+#### Player Commands
+The player uses Tokio channels for async communication:
+```rust
+// Player commands are sent via channels
+PlayerCommand::LoadAndPlayTrack(track)
+PlayerCommand::AddTrackToQueue(track)
+PlayerCommand::Play/Pause/Stop
+```
+
+#### Event System
+```rust
+// Player events are broadcast to UI
+PlayerEvent::StateChanged(PlayerState)
+PlayerEvent::TrackChanged(Track)
+PlayerEvent::DownloadProgress { track_id, progress }
+```
+
+#### TUI Key Bindings
+All song lists support consistent key bindings:
+- `Enter`: Play track/album
+- `l`: Show album details
+- `h`: Show artist discography  
+- `a`: Add to queue next
+- `A`: Replace queue with all tracks
+- `m`: Add album to favorites library
+
+### Data Flow
+
+1. **Search Flow**: TUI → API client → Cache check → HTTP request → JSON parsing → Display
+2. **Playback Flow**: Track selection → Stream URL fetch → Download manager → Audio decoder → Audio sink
+3. **Caching Flow**: Stream download → Local storage → ID3 metadata extraction → Cache database
+
+### Configuration
+
+- **Config File**: `~/.config/dab/config.toml` (managed by `config.rs`)
+- **Cache Directory**: `~/.cache/dab/` for audio files and metadata
+- **Logging**: Structured logging to `/tmp/dab_rs.log` (NO print statements allowed)
+
+## API Integration
+
+### OpenAPI Schema
+The project integrates with a music API defined in `resource/openapi.yaml`:
+- **Search**: `/search?q=query&type=track|album|artist`
+- **Album Details**: `/album?albumId=id`
+- **Artist Discography**: `/discography?artistId=id`
+- **Stream URLs**: `/stream?trackId=id`
+
+### Mock Data for Testing
+Test API responses are provided in `resource/`:
+- `mock_search_q_coldplay_type_artist.json`
+- `mock_discography_artistId_40226.json`
+- `mock_album_albumId_0190295978044.json`
+
+## Development Guidelines
+
+### Code Style
+- Always run `cargo fmt` before commits
+- Use structured logging instead of print statements
+- Follow async/await patterns consistently
+- Handle errors with proper error types from `error.rs`
+
+### Testing
+- Unit tests for core functionality in `tests/`
+- Integration tests for streaming and caching
+- Mock data for API testing
+- Test both success and error paths
+
+### Audio Handling
+- Use Symphonia for decoding multiple formats
+- Implement proper buffering for streaming
+- Support local and remote audio sources
+- Handle stream URL expiration gracefully
+
+### UI Development
+- Component reusability across different views
+- Consistent key binding patterns
+- Proper async event handling
+- Kitty graphics protocol for cover art display
+
+### Caching Strategy
+- API responses cached in memory with HTTP cache headers
+- Audio files cached locally with ID3 metadata
+- Cleanup based on cache size limits
+- Preloading for better user experience
+
+## Important Notes
+
+- **No Print Statements**: All output must use structured logging
+- **Async First**: All I/O operations should be async
+- **Error Handling**: Use the custom error types, don't panic
+- **ID Handling**: Convert all API IDs to strings for consistency
+- **Stream URLs**: Always request fresh URLs before playback due to expiration
+- **Memory Management**: Use circular buffers for streaming to prevent memory leaks
