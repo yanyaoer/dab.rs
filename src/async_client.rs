@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::api_cache::{ApiCache, CachedResponse};
+use crate::config::Config;
 use crate::error::{DabError, DabResult};
 use crate::search::{DabAlbum, DabArtist, SearchResult};
 
@@ -72,9 +73,10 @@ pub struct NetworkManager {
 
 impl AsyncClient {
     pub fn new() -> Self {
+        let config = Config::load();
         Self {
             client: Client::new(),
-            base_url: "https://dab.yeet.su/api".to_string(),
+            base_url: config.api.base_url,
             cache: Arc::new(ApiCache::new()),
         }
     }
@@ -88,10 +90,19 @@ impl AsyncClient {
     }
 
     pub fn new_with_cache(cache: Arc<ApiCache>) -> Self {
+        let config = Config::load();
         Self {
             client: Client::new(),
-            base_url: "https://dab.yeet.su/api".to_string(),
+            base_url: config.api.base_url,
             cache,
+        }
+    }
+
+    pub fn new_with_config(config: &Config) -> Self {
+        Self {
+            client: Client::new(),
+            base_url: config.api.base_url.clone(),
+            cache: Arc::new(ApiCache::new()),
         }
     }
 

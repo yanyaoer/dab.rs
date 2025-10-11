@@ -2,6 +2,7 @@ use log::{debug, error, info};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
+use crate::config::Config;
 use crate::error::{DabError, DabResult};
 use crate::id_utils::{
     deserialize_id_as_string, deserialize_option_id_as_string, deserialize_similar_artist_ids,
@@ -340,9 +341,17 @@ pub struct DabMusicApi {
 
 impl DabMusicApi {
     pub fn new() -> Self {
+        let config = Config::load();
         Self {
             client: Client::new(),
-            base_url: "https://dab.yeet.su/api".to_string(),
+            base_url: config.api.base_url,
+        }
+    }
+
+    pub fn new_with_config(config: &Config) -> Self {
+        Self {
+            client: Client::new(),
+            base_url: config.api.base_url.clone(),
         }
     }
 

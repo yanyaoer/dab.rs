@@ -1,0 +1,25 @@
+# DAB Music Player Configuration
+
+# Cache settings
+cache_dir = "~/.cache/dab"
+max_cache_size_mb = 5120  # 5 GB
+cache_max_age_days = 30
+cache_min_free_space_mb = 256
+preload_next_tracks = 2
+stream_url_expire_hours = 24
+
+# Audio settings
+audio_quality = "High"  # Options: Low, Medium, High
+volume = 0.8            # Volume level (0.0 to 1.0)
+crossfade_ms = 0        # Crossfade duration in milliseconds
+
+# API Configuration
+[api]
+base_url = "https://dab.yeet.su/api"  # API base URL
+timeout_seconds = 30                   # Request timeout in seconds
+max_retries = 3                        # Maximum retry attempts
+
+# You can customize the API URL for different environments:
+# Production: "https://dab.yeet.su/api"
+# Development: "http://localhost:8080/api"
+# Custom: "https://your-custom-server.com/api"

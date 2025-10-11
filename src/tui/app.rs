@@ -16,7 +16,8 @@ use std::io;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-use super::components::UnifiedList;
+use super::background_tasks::{BackgroundTask, BackgroundTaskProcessor, BackgroundTaskResult};
+use super::components::{ListItemType, UnifiedList};
 use super::handlers::{KeyHandler, NavigationAction};
 use crate::async_client::AsyncNetworkClient;
 use crate::cache::Cache;
@@ -40,6 +41,17 @@ struct SearchResult {
     search_type: SearchType,
     tracks: Vec<Track>,
     raw_tracks: Vec<DabTrack>,
+}
+
+// Loading state for UI feedback
+#[derive(Debug, Clone)]
+enum LoadingState {
+    Idle,
+    LoadingAlbum(String),
+    LoadingArtist(String),
+    SearchingArtist(String),
+    LoadingDiscography(String),
+    BatchLoading(usize, usize), // (current, total)
 }
 
 pub struct TuiApp {
@@ -81,6 +93,11 @@ pub struct TuiApp {
     detailed_album: Option<DabAlbum>,
     detailed_artist: Option<DabArtist>,
     artist_albums: Vec<DabAlbum>,
+    // Background task processing
+    bg_task_tx: mpsc::UnboundedSender<BackgroundTask>,
+    bg_task_rx: mpsc::UnboundedReceiver<BackgroundTaskResult>,
+    // Loading state for UI feedback
+    loading_state: LoadingState,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -138,6 +155,15 @@ impl TuiApp {
         // Create async search channel
         let (search_tx, search_rx) = mpsc::unbounded_channel();
 
+        // Create background task processor
+        let (bg_processor, bg_task_tx, bg_task_rx) =
+            BackgroundTaskProcessor::new(network_client.clone());
+
+        // Start background task processor
+        tokio::spawn(async move {
+            bg_processor.run().await;
+        });
+
         Ok(Self {
             player,
             library,
@@ -176,6 +202,11 @@ impl TuiApp {
             detailed_album: None,
             detailed_artist: None,
             artist_albums: Vec::new(),
+            // Background task processing
+            bg_task_tx,
+            bg_task_rx,
+            // Loading state
+            loading_state: LoadingState::Idle,
         })
     }
 
@@ -192,9 +223,15 @@ impl TuiApp {
         // Initialize lists
         self.refresh_main_list().await;
 
+        // Counter for periodic updates
+        let mut update_counter = 0u32;
+
         loop {
-            // Update player status for header display
-            self.update_player_status().await;
+            // Only update player status periodically (every 10 loops = ~500ms)
+            update_counter += 1;
+            if update_counter % 10 == 0 {
+                self.update_player_status().await;
+            }
 
             // Draw UI
             terminal.draw(|f| self.ui(f))?;
@@ -216,6 +253,11 @@ impl TuiApp {
             // Handle async search results
             while let Ok(search_result) = self.search_rx.try_recv() {
                 self.handle_search_result(search_result).await;
+            }
+
+            // Handle background task results
+            while let Ok(task_result) = self.bg_task_rx.try_recv() {
+                self.handle_background_task_result(task_result).await;
             }
 
             if self.should_quit {
@@ -609,14 +651,31 @@ impl TuiApp {
         let status_text = if let Some(ref msg) = self.status_message {
             msg.clone()
         } else {
-            format!(
-                "View: {:?} | {} items",
-                self.current_view,
-                self.main_list.items.len()
-            )
+            // Show loading state if active
+            match &self.loading_state {
+                LoadingState::LoadingAlbum(name) => format!("⏳ Loading album: {}...", name),
+                LoadingState::LoadingArtist(name) => format!("⏳ Loading artist: {}...", name),
+                LoadingState::SearchingArtist(name) => format!("🔍 Searching for artist: {}...", name),
+                LoadingState::LoadingDiscography(name) => format!("⏳ Loading discography for {}...", name),
+                LoadingState::BatchLoading(current, total) => {
+                    format!("⏳ Loading albums: {}/{}...", current, total)
+                }
+                LoadingState::Idle => {
+                    format!(
+                        "View: {:?} | {} items",
+                        self.current_view,
+                        self.main_list.items.len()
+                    )
+                }
+            }
         };
 
-        let status = Paragraph::new(status_text).style(Style::default().fg(Color::Yellow));
+        let status_style = match self.loading_state {
+            LoadingState::Idle => Style::default().fg(Color::Yellow),
+            _ => Style::default().fg(Color::Cyan).add_modifier(Modifier::ITALIC),
+        };
+
+        let status = Paragraph::new(status_text).style(status_style);
         f.render_widget(status, area);
     }
 
@@ -693,21 +752,28 @@ impl TuiApp {
                 }
             }
             KeyCode::Char('h') => {
+                // Load artist discography (NON-BLOCKING)
                 let current_list = match self.current_view {
                     View::Queue => &self.queue_list,
                     _ => &self.main_list,
                 };
 
-                if let Ok(Some(action)) = self
-                    .key_handler
-                    .handle_h_key(current_list, &self.network_client)
-                    .await
-                {
-                    match action {
-                        NavigationAction::ShowArtistDiscography(artist_id) => {
-                            self.show_artist_discography_by_id(&artist_id).await?;
-                        }
-                        _ => {}
+                if let Some(item) = current_list.get_selected_item() {
+                    if let Some(artist_id) = item.get_artist_id() {
+                        // Direct load with artist ID
+                        self.loading_state = LoadingState::LoadingDiscography(item.get_artist_name());
+                        self.status_message = Some(format!("Loading discography for {}...", item.get_artist_name()));
+                        self.bg_task_tx
+                            .send(BackgroundTask::LoadDiscography { artist_id })
+                            .ok();
+                    } else {
+                        // Need to search for artist first
+                        let artist_name = item.get_artist_name();
+                        self.loading_state = LoadingState::SearchingArtist(artist_name.clone());
+                        self.status_message = Some(format!("Searching for artist: {}...", artist_name));
+                        self.bg_task_tx
+                            .send(BackgroundTask::SearchArtist { query: artist_name })
+                            .ok();
                     }
                 }
             }
@@ -723,31 +789,61 @@ impl TuiApp {
             KeyCode::Char('p') => self.player.previous().await?,
             KeyCode::Char('s') => self.player.stop().await?,
 
-            // Track selection - unified Enter key behavior
+            // Track selection - unified Enter key behavior (NON-BLOCKING)
             KeyCode::Enter => {
                 let current_list = match self.current_view {
                     View::Queue => &self.queue_list,
                     _ => &self.main_list,
                 };
 
-                if let Ok(Some(action)) = self
-                    .key_handler
-                    .handle_enter(current_list, &self.network_client)
-                    .await
-                {
-                    match action {
-                        NavigationAction::PlayTrack(track) => {
-                            self.player.load_and_play_track(track.clone()).await?;
-                            self.status_message = Some(format!("Playing: {}", track.title));
+                if let Some(item) = current_list.get_selected_item() {
+                    match item {
+                        ListItemType::FavoriteAlbum(album) => {
+                            // Load album in background for playback
+                            self.loading_state = LoadingState::LoadingAlbum(album.title.clone());
+                            self.status_message = Some(format!("Loading album: {}...", album.title));
+                            self.bg_task_tx
+                                .send(BackgroundTask::LoadAlbumForPlay {
+                                    album_id: album.id.clone(),
+                                })
+                                .ok();
                         }
-                        NavigationAction::PlayAlbum(tracks) => {
-                            if !tracks.is_empty() {
-                                self.player.clear_and_play_tracks(tracks.clone()).await?;
-                                self.status_message =
-                                    Some(format!("Playing album with {} tracks", tracks.len()));
+                        ListItemType::Track(track) => {
+                            // Play track directly (no network needed)
+                            if let Err(e) = self.player.load_and_play_track(track.clone()).await {
+                                self.status_message = Some(format!("Failed to play track: {}", e));
+                            } else {
+                                self.status_message = Some(format!("Playing: {}", track.title));
                             }
                         }
-                        _ => {}
+                        ListItemType::DabAlbum(album) => {
+                            // Play album tracks directly if available
+                            if let Some(tracks) = &album.tracks {
+                                let player_tracks: Vec<Track> = tracks
+                                    .iter()
+                                    .map(|dab_track| Track::from_dab_track(dab_track))
+                                    .collect();
+                                if !player_tracks.is_empty() {
+                                    if let Err(e) = self.player.clear_and_play_tracks(player_tracks.clone()).await {
+                                        self.status_message = Some(format!("Failed to play album: {}", e));
+                                    } else {
+                                        self.status_message = Some(format!("Playing album: {}", album.title));
+                                    }
+                                }
+                            }
+                        }
+                        ListItemType::QueueTrack { track, .. } => {
+                            // Play track directly
+                            if let Err(e) = self.player.load_and_play_track(track.clone()).await {
+                                self.status_message = Some(format!("Failed to play track: {}", e));
+                            } else {
+                                self.status_message = Some(format!("Playing: {}", track.title));
+                            }
+                        }
+                        ListItemType::Album(_) => {
+                            // Library albums don't have IDs, can't load them
+                            self.status_message = Some("Cannot play library album without ID".to_string());
+                        }
                     }
                 }
             }
@@ -784,27 +880,60 @@ impl TuiApp {
                 }
             }
             KeyCode::Char('A') => {
+                // Clear queue and play all tracks (NON-BLOCKING)
                 let current_list = match self.current_view {
                     View::Queue => &self.queue_list,
                     _ => &self.main_list,
                 };
 
-                if let Ok(Some(action)) = self
-                    .key_handler
-                    .handle_shift_a_key(current_list, &self.network_client)
-                    .await
-                {
-                    match action {
-                        NavigationAction::ClearAndPlayAll(tracks) => {
-                            if !tracks.is_empty() {
-                                self.player.clear_and_play_tracks(tracks.clone()).await?;
-                                self.status_message = Some(format!(
-                                    "Cleared queue and added {} tracks from current list",
-                                    tracks.len()
-                                ));
+                let mut album_ids_to_load = Vec::new();
+                let mut immediate_tracks = Vec::new();
+
+                // Collect tracks and albums to load
+                for item in &current_list.items {
+                    match item {
+                        ListItemType::Track(track) => {
+                            // Skip album/artist entries in search results
+                            if !track.title.starts_with("[Album]") && !track.title.starts_with("[Artist]") {
+                                immediate_tracks.push(track.clone());
                             }
                         }
-                        _ => {}
+                        ListItemType::FavoriteAlbum(album) => {
+                            // Need to load album from network
+                            album_ids_to_load.push(album.id.clone());
+                        }
+                        ListItemType::DabAlbum(album) => {
+                            // Can use tracks directly if available
+                            if let Some(tracks) = &album.tracks {
+                                let player_tracks: Vec<Track> = tracks
+                                    .iter()
+                                    .map(|dab_track| Track::from_dab_track(dab_track))
+                                    .collect();
+                                immediate_tracks.extend(player_tracks);
+                            }
+                        }
+                        ListItemType::QueueTrack { track, .. } => {
+                            immediate_tracks.push(track.clone());
+                        }
+                        ListItemType::Album(_) => {
+                            // Library albums don't have IDs, skip
+                        }
+                    }
+                }
+
+                if !album_ids_to_load.is_empty() {
+                    // Load albums in background
+                    self.loading_state = LoadingState::BatchLoading(0, album_ids_to_load.len());
+                    self.status_message = Some(format!("Loading {} albums in background...", album_ids_to_load.len()));
+                    self.bg_task_tx
+                        .send(BackgroundTask::BatchLoadAlbums { album_ids: album_ids_to_load })
+                        .ok();
+                } else if !immediate_tracks.is_empty() {
+                    // Play immediately available tracks
+                    if let Err(e) = self.player.clear_and_play_tracks(immediate_tracks.clone()).await {
+                        self.status_message = Some(format!("Failed to play tracks: {}", e));
+                    } else {
+                        self.status_message = Some(format!("Playing {} tracks", immediate_tracks.len()));
                     }
                 }
             }
@@ -865,10 +994,22 @@ impl TuiApp {
     async fn handle_player_event(&mut self, event: PlayerEvent) {
         match event {
             PlayerEvent::StateChanged(state) => {
+                self.player_state = state.clone();
                 self.status_message = Some(format!("Player state: {:?}", state));
+                // Force an immediate status update on state change
+                self.update_player_status().await;
             }
             PlayerEvent::TrackChanged(track) => {
+                self.current_track = Some(track.clone());
                 self.status_message = Some(format!("Now playing: {}", track.title));
+                // Reset position and header scroll for new track
+                self.current_position_ms = 0;
+                self.header_scroll_offset = 0;
+                self.header_scroll_direction = 0;
+            }
+            PlayerEvent::PositionChanged(pos) => {
+                // Update position without status message
+                self.current_position_ms = pos;
             }
             PlayerEvent::Error(error) => {
                 self.status_message = Some(format!("Error: {}", error));
@@ -1607,5 +1748,105 @@ impl TuiApp {
             }
         }
         Ok(())
+    }
+
+    async fn handle_background_task_result(&mut self, result: BackgroundTaskResult) {
+        match result {
+            BackgroundTaskResult::AlbumLoaded { album, for_play } => {
+                // Clear loading state
+                self.loading_state = LoadingState::Idle;
+
+                if for_play {
+                    // Play the album tracks
+                    if let Some(tracks) = &album.tracks {
+                        let player_tracks: Vec<Track> = tracks
+                            .iter()
+                            .map(|dab_track| Track::from_dab_track(dab_track))
+                            .collect();
+                        if !player_tracks.is_empty() {
+                            if let Err(e) = self.player.clear_and_play_tracks(player_tracks.clone()).await {
+                                self.status_message = Some(format!("Failed to play album: {}", e));
+                            } else {
+                                self.status_message = Some(format!("Playing album: {}", album.title));
+                            }
+                        }
+                    }
+                } else {
+                    // Show album detail
+                    self.detailed_album = Some(album.clone());
+                    self.switch_view(View::DetailedAlbum).await;
+                    self.status_message = Some(format!("Album '{}' loaded", album.title));
+                }
+            }
+            BackgroundTaskResult::AlbumForAddNextLoaded { tracks } => {
+                self.loading_state = LoadingState::Idle;
+
+                if !tracks.is_empty() {
+                    // Add all tracks next in queue
+                    for track in tracks.iter().rev() {
+                        if let Err(e) = self.player.add_track_next(track.clone()).await {
+                            error!("Failed to add track to queue: {}", e);
+                        }
+                    }
+                    self.status_message = Some(format!("Added {} tracks to queue", tracks.len()));
+                }
+            }
+            BackgroundTaskResult::ArtistSearchCompleted { query, artist_id } => {
+                self.loading_state = LoadingState::Idle;
+
+                if let Some(artist_id) = artist_id {
+                    // Load discography in background
+                    self.loading_state = LoadingState::LoadingDiscography(query.clone());
+                    self.bg_task_tx
+                        .send(BackgroundTask::LoadDiscography { artist_id })
+                        .ok();
+                } else {
+                    self.status_message = Some(format!("Artist '{}' not found", query));
+                }
+            }
+            BackgroundTaskResult::DiscographyLoaded { artist, albums } => {
+                self.loading_state = LoadingState::Idle;
+
+                self.detailed_artist = Some(artist.clone());
+                self.artist_albums = albums;
+                self.switch_view(View::ArtistDiscography).await;
+                self.status_message = Some(format!("Loaded discography for {}", artist.name));
+            }
+            BackgroundTaskResult::BatchAlbumsLoaded { albums: _, tracks } => {
+                self.loading_state = LoadingState::Idle;
+
+                if !tracks.is_empty() {
+                    if let Err(e) = self.player.clear_and_play_tracks(tracks.clone()).await {
+                        self.status_message = Some(format!("Failed to play tracks: {}", e));
+                    } else {
+                        self.status_message = Some(format!("Playing {} tracks", tracks.len()));
+                    }
+                }
+            }
+            BackgroundTaskResult::Error { task, error } => {
+                self.loading_state = LoadingState::Idle;
+
+                let error_msg = match task {
+                    BackgroundTask::LoadAlbum { .. } | BackgroundTask::LoadAlbumForPlay { .. } => {
+                        format!("Failed to load album: {}", error)
+                    }
+                    BackgroundTask::SearchArtist { query } => {
+                        format!("Failed to search artist '{}': {}", query, error)
+                    }
+                    BackgroundTask::LoadDiscography { .. } => {
+                        format!("Failed to load discography: {}", error)
+                    }
+                    BackgroundTask::BatchLoadAlbums { .. } => {
+                        format!("Failed to load albums: {}", error)
+                    }
+                    BackgroundTask::LoadAlbumForAddNext { .. } => {
+                        format!("Failed to load album for queue: {}", error)
+                    }
+                };
+
+                self.status_message = Some(error_msg);
+                error!("{}", self.status_message.as_ref().unwrap());
+            }
+        }
     }
 }
