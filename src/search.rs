@@ -1,13 +1,13 @@
-use log::{debug, error, info};
-use reqwest::Client;
+use log::{debug, info};
 use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
-use crate::error::{DabError, DabResult};
+use crate::error::DabResult;
 use crate::id_utils::{
     deserialize_id_as_string, deserialize_option_id_as_string, deserialize_similar_artist_ids,
     serialize_id_as_string, serialize_option_id_as_string, serialize_similar_artist_ids,
 };
+use crate::music_provider::MusicProviderClient;
 use crate::player::Track;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -309,11 +309,6 @@ pub struct AlbumLabel {
     pub slug: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StreamResponse {
-    pub url: String,
-}
-
 impl From<DabTrack> for Track {
     fn from(dab_track: DabTrack) -> Self {
         Track {
@@ -335,23 +330,19 @@ impl From<DabTrack> for Track {
 
 #[derive(Clone)]
 pub struct DabMusicApi {
-    client: Client,
-    base_url: String,
+    provider: MusicProviderClient,
 }
 
 impl DabMusicApi {
     pub fn new() -> Self {
-        let config = Config::load();
         Self {
-            client: Client::new(),
-            base_url: config.api.base_url,
+            provider: MusicProviderClient::new(),
         }
     }
 
     pub fn new_with_config(config: &Config) -> Self {
         Self {
-            client: Client::new(),
-            base_url: config.api.base_url.clone(),
+            provider: MusicProviderClient::new_with_config(config.clone()),
         }
     }
 
@@ -361,287 +352,39 @@ impl DabMusicApi {
         search_type: &str,
         limit: u32,
     ) -> DabResult<SearchResult> {
-        let url = format!("{}/search", self.base_url);
-
         info!(
-            "Searching DAB API: query='{}', type='{}', limit={}",
+            "Searching API: query='{}', type='{}', limit={}",
             query, search_type, limit
         );
 
-        let response = self
-            .client
-            .get(&url)
-            .query(&[
-                ("q", query),
-                ("type", search_type),
-                ("limit", &limit.to_string()),
-            ])
-            .send()
-            .await?;
-
-        if response.status().is_success() {
-            match response.text().await {
-                Ok(response_text) => {
-                    debug!("Raw API response: {}", response_text);
-
-                    // First, try to parse as generic JSON to understand structure
-                    if let Ok(json_value) =
-                        serde_json::from_str::<serde_json::Value>(&response_text)
-                    {
-                        debug!("JSON structure: {:#}", json_value);
-                    }
-
-                    match serde_json::from_str::<SearchResult>(&response_text) {
-                        Ok(search_result) => {
-                            let result_count = search_result.get_results().len();
-                            info!("DAB API search successful: found {} results", result_count);
-                            Ok(search_result)
-                        }
-                        Err(e) => {
-                            error!("Failed to parse DAB API response: {}", e);
-                            error!("Response text: {}", response_text);
-                            Err(DabError::Network(format!(
-                                "Failed to parse DAB API response: {}",
-                                e
-                            )))
-                        }
-                    }
-                }
-                Err(e) => {
-                    error!("Failed to read response text: {}", e);
-                    Err(DabError::Network(format!(
-                        "Failed to read response text: {}",
-                        e
-                    )))
-                }
-            }
-        } else {
-            error!("DAB API returned error: {}", response.status());
-            Err(DabError::Network(format!(
-                "DAB API returned error: {}",
-                response.status()
-            )))
-        }
+        self.provider.search(query, search_type, limit).await
     }
 
-    pub async fn get_stream_url(&self, track_id: &str, quality: Option<&str>) -> DabResult<String> {
-        let url = format!("{}/stream", self.base_url);
-        let quality = quality.unwrap_or("27");
-
-        debug!(
-            "Getting stream URL for track: {} with quality: {}",
-            track_id, quality
-        );
-
-        let response = self
-            .client
-            .get(&url)
-            .query(&[("trackId", track_id), ("quality", quality)])
-            .send()
-            .await?;
-
-        if response.status().is_success() {
-            let response_text = response.text().await.unwrap_or_default();
-            debug!("Raw stream API response: {}", response_text);
-
-            match serde_json::from_str::<StreamResponse>(&response_text) {
-                Ok(stream_response) => {
-                    info!(
-                        "Got stream URL for track {}: {}",
-                        track_id, stream_response.url
-                    );
-                    Ok(stream_response.url)
-                }
-                Err(e) => {
-                    error!("Failed to parse stream response: {}", e);
-                    error!("Stream response text: {}", response_text);
-                    Err(DabError::Network(format!(
-                        "Failed to parse stream response: {}",
-                        e
-                    )))
-                }
-            }
-        } else {
-            error!("Failed to get stream URL: {}", response.status());
-            Err(DabError::Network(format!(
-                "Failed to get stream URL: {}",
-                response.status()
-            )))
-        }
+    pub async fn get_stream_url(
+        &self,
+        track_id: &str,
+        _quality: Option<&str>,
+    ) -> DabResult<String> {
+        debug!("Getting stream URL for track: {}", track_id);
+        self.provider.get_stream_url(track_id).await
     }
 
     pub async fn get_album_info(&self, album_id: &str) -> DabResult<DabAlbum> {
-        let url = format!("{}/album", self.base_url);
-
         debug!("Getting album info for: {}", album_id);
-
-        let response = self
-            .client
-            .get(&url)
-            .query(&[("albumId", album_id)])
-            .send()
-            .await?;
-
-        if response.status().is_success() {
-            let response_text = response.text().await.unwrap_or_default();
-            debug!("Raw album API response: {}", response_text);
-
-            // Try to parse as wrapped response first
-            #[derive(Deserialize, Debug)]
-            struct AlbumResponse {
-                album: DabAlbum,
-            }
-
-            match serde_json::from_str::<AlbumResponse>(&response_text) {
-                Ok(album_response) => {
-                    info!("Got album info for: {}", album_id);
-                    Ok(album_response.album)
-                }
-                Err(_) => {
-                    // If wrapped response fails, try direct album parsing
-                    debug!("Failed to parse as wrapped response, trying direct album parsing");
-                    match serde_json::from_str::<DabAlbum>(&response_text) {
-                        Ok(album) => {
-                            info!("Got album info for: {} (direct parsing)", album_id);
-                            Ok(album)
-                        }
-                        Err(e) => {
-                            error!("Failed to parse album response: {}", e);
-                            error!("Album response text: {}", response_text);
-                            Err(DabError::Network(format!(
-                                "Failed to parse album response: {}",
-                                e
-                            )))
-                        }
-                    }
-                }
-            }
-        } else {
-            error!("Failed to get album info: {}", response.status());
-            Err(DabError::Network(format!(
-                "Failed to get album info: {}",
-                response.status()
-            )))
-        }
+        self.provider.get_album_info(album_id).await
     }
 
-    pub async fn get_lyrics(&self, artist: &str, title: &str) -> DabResult<String> {
-        let url = format!("{}/lyrics", self.base_url);
-
-        debug!("Getting lyrics for: {} - {}", artist, title);
-
-        let response = self
-            .client
-            .get(&url)
-            .query(&[("artist", artist), ("title", title)])
-            .send()
-            .await?;
-
-        if response.status().is_success() {
-            #[derive(Deserialize)]
-            struct LyricsResponse {
-                lyrics: String,
-                unsynced: Option<bool>,
-            }
-
-            match response.json::<LyricsResponse>().await {
-                Ok(lyrics_response) => {
-                    info!("Got lyrics for: {} - {}", artist, title);
-                    Ok(lyrics_response.lyrics)
-                }
-                Err(e) => {
-                    error!("Failed to parse lyrics response: {}", e);
-                    Err(DabError::Network(format!(
-                        "Failed to parse lyrics response: {}",
-                        e
-                    )))
-                }
-            }
-        } else if response.status() == 404 {
-            Ok("Lyrics not found".to_string())
-        } else {
-            error!("Failed to get lyrics: {}", response.status());
-            Err(DabError::Network(format!(
-                "Failed to get lyrics: {}",
-                response.status()
-            )))
-        }
+    pub async fn get_lyrics(&self, _artist: &str, _title: &str) -> DabResult<String> {
+        // TODO: Add lyrics support to backend
+        Ok("Lyrics not available".to_string())
     }
 
     pub async fn get_artist_discography(
         &self,
         artist_id: &str,
     ) -> DabResult<(DabArtist, Vec<DabAlbum>)> {
-        let url = format!("{}/discography", self.base_url);
-
         debug!("Getting discography for artist: {}", artist_id);
-
-        let response = self
-            .client
-            .get(&url)
-            .query(&[("artistId", artist_id)])
-            .send()
-            .await?;
-
-        if response.status().is_success() {
-            let response_text = response.text().await.unwrap_or_default();
-            debug!("Raw discography API response: {}", response_text);
-
-            // Try to parse as wrapped response first
-            #[derive(Deserialize, Debug)]
-            struct DiscographyResponse {
-                artist: DabArtist,
-                albums: Vec<DabAlbum>,
-            }
-
-            match serde_json::from_str::<DiscographyResponse>(&response_text) {
-                Ok(discography_response) => {
-                    info!("Got discography for artist: {}", artist_id);
-                    Ok((discography_response.artist, discography_response.albums))
-                }
-                Err(e) => {
-                    // Log the original parsing error
-                    debug!("Failed to parse as wrapped response: {}", e);
-
-                    // If wrapped response fails, try parsing as just albums array
-                    debug!("Trying albums array parsing");
-                    match serde_json::from_str::<Vec<DabAlbum>>(&response_text) {
-                        Ok(albums) => {
-                            info!("Got discography for artist: {} (albums only)", artist_id);
-                            // Create a minimal artist object
-                            let artist = DabArtist {
-                                id: artist_id.to_string(),
-                                name: "Unknown Artist".to_string(),
-                                albums_count: Some(albums.len() as u32),
-                                albums_as_primary_artist_count: None,
-                                albums_as_primary_composer_count: None,
-                                slug: None,
-                                image: None,
-                                biography: None,
-                                similar_artist_ids: None,
-                                information: None,
-                            };
-                            Ok((artist, albums))
-                        }
-                        Err(e2) => {
-                            error!("Failed to parse discography response: {}", e2);
-                            error!("Discography response text: {}", response_text);
-                            error!("Original wrapped parsing error: {}", e);
-                            Err(DabError::Network(format!(
-                                "Failed to parse discography response: {}",
-                                e
-                            )))
-                        }
-                    }
-                }
-            }
-        } else {
-            error!("Failed to get discography: {}", response.status());
-            Err(DabError::Network(format!(
-                "Failed to get discography: {}",
-                response.status()
-            )))
-        }
+        self.provider.get_artist_discography(artist_id).await
     }
 }
 

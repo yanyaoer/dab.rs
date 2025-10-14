@@ -315,7 +315,8 @@ impl TuiApp {
                         }
                         1 => {
                             // Scrolling right
-                            if self.header_scroll_offset + remaining_width >= track_text_chars.len() {
+                            if self.header_scroll_offset + remaining_width >= track_text_chars.len()
+                            {
                                 self.header_scroll_direction = -1; // Start scrolling left
                             } else {
                                 self.header_scroll_offset += 1;
@@ -426,8 +427,11 @@ impl TuiApp {
                 format!("{} | {}", app_title, track_info)
             } else {
                 // Track info is too long, use scrolling for the track part only
-                let end_pos = (self.header_scroll_offset + remaining_width).min(track_info_chars.len());
-                let scrolled_chars: String = track_info_chars[self.header_scroll_offset..end_pos].iter().collect();
+                let end_pos =
+                    (self.header_scroll_offset + remaining_width).min(track_info_chars.len());
+                let scrolled_chars: String = track_info_chars[self.header_scroll_offset..end_pos]
+                    .iter()
+                    .collect();
                 format!("{} | {}", app_title, scrolled_chars)
             }
         } else {
@@ -655,8 +659,12 @@ impl TuiApp {
             match &self.loading_state {
                 LoadingState::LoadingAlbum(name) => format!("⏳ Loading album: {}...", name),
                 LoadingState::LoadingArtist(name) => format!("⏳ Loading artist: {}...", name),
-                LoadingState::SearchingArtist(name) => format!("🔍 Searching for artist: {}...", name),
-                LoadingState::LoadingDiscography(name) => format!("⏳ Loading discography for {}...", name),
+                LoadingState::SearchingArtist(name) => {
+                    format!("🔍 Searching for artist: {}...", name)
+                }
+                LoadingState::LoadingDiscography(name) => {
+                    format!("⏳ Loading discography for {}...", name)
+                }
                 LoadingState::BatchLoading(current, total) => {
                     format!("⏳ Loading albums: {}/{}...", current, total)
                 }
@@ -672,7 +680,9 @@ impl TuiApp {
 
         let status_style = match self.loading_state {
             LoadingState::Idle => Style::default().fg(Color::Yellow),
-            _ => Style::default().fg(Color::Cyan).add_modifier(Modifier::ITALIC),
+            _ => Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::ITALIC),
         };
 
         let status = Paragraph::new(status_text).style(status_style);
@@ -761,8 +771,12 @@ impl TuiApp {
                 if let Some(item) = current_list.get_selected_item() {
                     if let Some(artist_id) = item.get_artist_id() {
                         // Direct load with artist ID
-                        self.loading_state = LoadingState::LoadingDiscography(item.get_artist_name());
-                        self.status_message = Some(format!("Loading discography for {}...", item.get_artist_name()));
+                        self.loading_state =
+                            LoadingState::LoadingDiscography(item.get_artist_name());
+                        self.status_message = Some(format!(
+                            "Loading discography for {}...",
+                            item.get_artist_name()
+                        ));
                         self.bg_task_tx
                             .send(BackgroundTask::LoadDiscography { artist_id })
                             .ok();
@@ -770,7 +784,8 @@ impl TuiApp {
                         // Need to search for artist first
                         let artist_name = item.get_artist_name();
                         self.loading_state = LoadingState::SearchingArtist(artist_name.clone());
-                        self.status_message = Some(format!("Searching for artist: {}...", artist_name));
+                        self.status_message =
+                            Some(format!("Searching for artist: {}...", artist_name));
                         self.bg_task_tx
                             .send(BackgroundTask::SearchArtist { query: artist_name })
                             .ok();
@@ -801,7 +816,8 @@ impl TuiApp {
                         ListItemType::FavoriteAlbum(album) => {
                             // Load album in background for playback
                             self.loading_state = LoadingState::LoadingAlbum(album.title.clone());
-                            self.status_message = Some(format!("Loading album: {}...", album.title));
+                            self.status_message =
+                                Some(format!("Loading album: {}...", album.title));
                             self.bg_task_tx
                                 .send(BackgroundTask::LoadAlbumForPlay {
                                     album_id: album.id.clone(),
@@ -809,11 +825,63 @@ impl TuiApp {
                                 .ok();
                         }
                         ListItemType::Track(track) => {
-                            // Play track directly (no network needed)
-                            if let Err(e) = self.player.load_and_play_track(track.clone()).await {
-                                self.status_message = Some(format!("Failed to play track: {}", e));
+                            if track.title.starts_with("[Album]") {
+                                let album_id = track.album_id.clone().or_else(|| {
+                                    if track.id.is_empty() {
+                                        None
+                                    } else {
+                                        Some(track.id.clone())
+                                    }
+                                });
+                                let album_name = track.album.clone();
+
+                                if let Some(album_id) = album_id {
+                                    self.loading_state =
+                                        LoadingState::LoadingAlbum(album_name.clone());
+                                    self.status_message =
+                                        Some(format!("Loading album: {}...", album_name));
+                                    self.bg_task_tx
+                                        .send(BackgroundTask::LoadAlbumForPlay { album_id })
+                                        .ok();
+                                } else {
+                                    self.status_message = Some(format!(
+                                        "Cannot play album '{}' without ID",
+                                        album_name
+                                    ));
+                                }
+                            } else if track.title.starts_with("[Artist]") {
+                                let artist_id = track.artist_id.clone().or_else(|| {
+                                    if track.id.is_empty() {
+                                        None
+                                    } else {
+                                        Some(track.id.clone())
+                                    }
+                                });
+                                let artist_name = track.artist.clone();
+
+                                if let Some(artist_id) = artist_id {
+                                    self.loading_state =
+                                        LoadingState::LoadingDiscography(artist_name.clone());
+                                    self.status_message =
+                                        Some(format!("Loading discography for {}...", artist_name));
+                                    self.bg_task_tx
+                                        .send(BackgroundTask::LoadDiscography { artist_id })
+                                        .ok();
+                                } else {
+                                    self.status_message = Some(format!(
+                                        "Cannot load artist '{}' without ID",
+                                        artist_name
+                                    ));
+                                }
                             } else {
-                                self.status_message = Some(format!("Playing: {}", track.title));
+                                // Play track directly (no network needed)
+                                if let Err(e) = self.player.load_and_play_track(track.clone()).await
+                                {
+                                    self.status_message =
+                                        Some(format!("Failed to play track: {}", e));
+                                } else {
+                                    self.status_message = Some(format!("Playing: {}", track.title));
+                                }
                             }
                         }
                         ListItemType::DabAlbum(album) => {
@@ -824,10 +892,16 @@ impl TuiApp {
                                     .map(|dab_track| Track::from_dab_track(dab_track))
                                     .collect();
                                 if !player_tracks.is_empty() {
-                                    if let Err(e) = self.player.clear_and_play_tracks(player_tracks.clone()).await {
-                                        self.status_message = Some(format!("Failed to play album: {}", e));
+                                    if let Err(e) = self
+                                        .player
+                                        .clear_and_play_tracks(player_tracks.clone())
+                                        .await
+                                    {
+                                        self.status_message =
+                                            Some(format!("Failed to play album: {}", e));
                                     } else {
-                                        self.status_message = Some(format!("Playing album: {}", album.title));
+                                        self.status_message =
+                                            Some(format!("Playing album: {}", album.title));
                                     }
                                 }
                             }
@@ -842,7 +916,8 @@ impl TuiApp {
                         }
                         ListItemType::Album(_) => {
                             // Library albums don't have IDs, can't load them
-                            self.status_message = Some("Cannot play library album without ID".to_string());
+                            self.status_message =
+                                Some("Cannot play library album without ID".to_string());
                         }
                     }
                 }
@@ -864,18 +939,95 @@ impl TuiApp {
                     _ => &self.main_list,
                 };
 
-                if let Ok(Some(action)) = self
-                    .key_handler
-                    .handle_a_key(current_list, &self.network_client)
-                    .await
-                {
-                    match action {
-                        NavigationAction::AddTrackNext(track) => {
+                if let Some(item) = current_list.get_selected_item() {
+                    match item {
+                        ListItemType::FavoriteAlbum(album) => {
+                            self.loading_state = LoadingState::LoadingAlbum(album.title.clone());
+                            self.status_message =
+                                Some(format!("Loading album: {}...", album.title));
+                            self.bg_task_tx
+                                .send(BackgroundTask::LoadAlbumForAddNext {
+                                    album_id: album.id.clone(),
+                                })
+                                .ok();
+                        }
+                        ListItemType::Track(track) => {
+                            if track.title.starts_with("[Album]") {
+                                let album_id = track.album_id.clone().or_else(|| {
+                                    if track.id.is_empty() {
+                                        None
+                                    } else {
+                                        Some(track.id.clone())
+                                    }
+                                });
+                                let album_name = track.album.clone();
+
+                                if let Some(album_id) = album_id {
+                                    self.loading_state =
+                                        LoadingState::LoadingAlbum(album_name.clone());
+                                    self.status_message =
+                                        Some(format!("Loading album: {}...", album_name));
+                                    self.bg_task_tx
+                                        .send(BackgroundTask::LoadAlbumForAddNext { album_id })
+                                        .ok();
+                                } else {
+                                    self.status_message = Some(format!(
+                                        "Cannot queue album '{}' without ID",
+                                        album_name
+                                    ));
+                                }
+                            } else if track.title.starts_with("[Artist]") {
+                                let artist_name = track.artist.clone();
+                                self.status_message = Some(format!(
+                                    "Cannot queue artist '{}' without selecting an album or track",
+                                    artist_name
+                                ));
+                            } else {
+                                self.player.add_track_next(track.clone()).await?;
+                                self.status_message =
+                                    Some(format!("Added {} to queue next", track.title));
+                            }
+                        }
+                        ListItemType::DabAlbum(album) => {
+                            if let Some(tracks) = &album.tracks {
+                                let mut added = 0;
+                                for dab_track in tracks.iter().rev() {
+                                    let player_track = Track::from_dab_track(dab_track);
+                                    self.player.add_track_next(player_track).await?;
+                                    added += 1;
+                                }
+                                if added > 0 {
+                                    self.status_message = Some(format!(
+                                        "Added album '{}' to queue next",
+                                        album.title
+                                    ));
+                                } else {
+                                    self.status_message = Some(format!(
+                                        "Album '{}' has no tracks to queue",
+                                        album.title
+                                    ));
+                                }
+                            } else {
+                                self.loading_state =
+                                    LoadingState::LoadingAlbum(album.title.clone());
+                                self.status_message =
+                                    Some(format!("Loading album: {}...", album.title));
+                                self.bg_task_tx
+                                    .send(BackgroundTask::LoadAlbumForAddNext {
+                                        album_id: album.id.clone(),
+                                    })
+                                    .ok();
+                            }
+                        }
+                        ListItemType::QueueTrack { track, .. } => {
                             self.player.add_track_next(track.clone()).await?;
                             self.status_message =
                                 Some(format!("Added {} to queue next", track.title));
                         }
-                        _ => {}
+                        ListItemType::Album(_) => {
+                            self.status_message =
+                                Some("Cannot queue library album without ID".to_string());
+                        }
                     }
                 }
             }
@@ -894,7 +1046,9 @@ impl TuiApp {
                     match item {
                         ListItemType::Track(track) => {
                             // Skip album/artist entries in search results
-                            if !track.title.starts_with("[Album]") && !track.title.starts_with("[Artist]") {
+                            if !track.title.starts_with("[Album]")
+                                && !track.title.starts_with("[Artist]")
+                            {
                                 immediate_tracks.push(track.clone());
                             }
                         }
@@ -924,16 +1078,26 @@ impl TuiApp {
                 if !album_ids_to_load.is_empty() {
                     // Load albums in background
                     self.loading_state = LoadingState::BatchLoading(0, album_ids_to_load.len());
-                    self.status_message = Some(format!("Loading {} albums in background...", album_ids_to_load.len()));
+                    self.status_message = Some(format!(
+                        "Loading {} albums in background...",
+                        album_ids_to_load.len()
+                    ));
                     self.bg_task_tx
-                        .send(BackgroundTask::BatchLoadAlbums { album_ids: album_ids_to_load })
+                        .send(BackgroundTask::BatchLoadAlbums {
+                            album_ids: album_ids_to_load,
+                        })
                         .ok();
                 } else if !immediate_tracks.is_empty() {
                     // Play immediately available tracks
-                    if let Err(e) = self.player.clear_and_play_tracks(immediate_tracks.clone()).await {
+                    if let Err(e) = self
+                        .player
+                        .clear_and_play_tracks(immediate_tracks.clone())
+                        .await
+                    {
                         self.status_message = Some(format!("Failed to play tracks: {}", e));
                     } else {
-                        self.status_message = Some(format!("Playing {} tracks", immediate_tracks.len()));
+                        self.status_message =
+                            Some(format!("Playing {} tracks", immediate_tracks.len()));
                     }
                 }
             }
@@ -995,7 +1159,22 @@ impl TuiApp {
         match event {
             PlayerEvent::StateChanged(state) => {
                 self.player_state = state.clone();
-                self.status_message = Some(format!("Player state: {:?}", state));
+
+                let should_update_status = match state {
+                    PlayerState::Stopped => {
+                        if let Some(ref msg) = self.status_message {
+                            !msg.starts_with("Error:") && !msg.starts_with("Failed")
+                        } else {
+                            true
+                        }
+                    }
+                    _ => true,
+                };
+
+                if should_update_status {
+                    self.status_message = Some(format!("Player state: {:?}", state));
+                }
+
                 // Force an immediate status update on state change
                 self.update_player_status().await;
             }
@@ -1027,7 +1206,7 @@ impl TuiApp {
             if !matches!(view, View::Library | View::Queue | View::Search) {
                 self.view_history.push(self.current_view.clone());
             }
-            
+
             self.current_view = view.clone();
             self.refresh_main_list().await;
 
@@ -1045,7 +1224,7 @@ impl TuiApp {
     async fn switch_to_main_view(&mut self, view: View) {
         // Clear history when switching to main views (Library, Queue, Search)
         self.view_history.clear();
-        
+
         if self.current_view != view {
             self.current_view = view.clone();
             self.refresh_main_list().await;
@@ -1115,7 +1294,8 @@ impl TuiApp {
                     .with_help(true);
                 } else {
                     // Initialize empty search results - show empty list until search is performed
-                    self.main_list = UnifiedList::new(format!("Search: {}", self.search_type.display_name()));
+                    self.main_list =
+                        UnifiedList::new(format!("Search: {}", self.search_type.display_name()));
                     // Don't add help text for search view initially
                 }
             }
@@ -1152,7 +1332,7 @@ impl TuiApp {
         // Preserve search state for view switching
         self.last_search_query = search_result.query.clone();
         self.last_search_type = search_result.search_type.clone();
-        
+
         // Update main list with search results
         match search_result.search_type {
             SearchType::Track => {
@@ -1162,7 +1342,7 @@ impl TuiApp {
                 ))
                 .with_tracks(search_result.tracks.clone())
                 .with_help(true);
-                
+
                 // Preserve the results for view switching
                 self.search_results_preserved = search_result.tracks;
             }
@@ -1173,13 +1353,14 @@ impl TuiApp {
                 ))
                 .with_tracks(search_result.tracks.clone())
                 .with_help(true);
-                
+
                 // Preserve the results for view switching
                 self.search_results_preserved = search_result.tracks;
             }
             SearchType::Artist => {
                 // For artist search, check if we have only one unique artist
-                let unique_artists: std::collections::HashSet<String> = search_result.tracks
+                let unique_artists: std::collections::HashSet<String> = search_result
+                    .tracks
                     .iter()
                     .filter_map(|track| track.artist_id.clone())
                     .collect();
@@ -1187,8 +1368,11 @@ impl TuiApp {
                 if unique_artists.len() == 1 {
                     // Only one artist found, auto-navigate to discography
                     let artist_id = unique_artists.into_iter().next().unwrap();
-                    info!("Only one artist found in search, auto-navigating to discography: {}", artist_id);
-                    
+                    info!(
+                        "Only one artist found in search, auto-navigating to discography: {}",
+                        artist_id
+                    );
+
                     match self.network_client.get_artist_discography(artist_id).await {
                         Ok((artist, albums)) => {
                             self.detailed_artist = Some(artist);
@@ -1201,15 +1385,13 @@ impl TuiApp {
                             return;
                         }
                         Err(e) => {
-                            self.status_message = Some(format!(
-                                "Failed to load discography: {}",
-                                e
-                            ));
+                            self.status_message =
+                                Some(format!("Failed to load discography: {}", e));
                             // Fall back to showing artist list
                         }
                     }
                 }
-                
+
                 // Multiple artists or auto-navigation failed, show artist list
                 self.main_list = UnifiedList::new(format!(
                     "Search Results: {}",
@@ -1217,7 +1399,7 @@ impl TuiApp {
                 ))
                 .with_tracks(search_result.tracks.clone())
                 .with_help(true);
-                
+
                 // Preserve the results for view switching
                 self.search_results_preserved = search_result.tracks;
             }
@@ -1406,7 +1588,10 @@ impl TuiApp {
                                     album: format!("{} albums", artist.albums_count.unwrap_or(0)),
                                     duration_ms: 0,
                                     local_path: None,
-                                    cover_url: artist.image.as_ref().and_then(|img| img.large.clone()),
+                                    cover_url: artist
+                                        .image
+                                        .as_ref()
+                                        .and_then(|img| img.large.clone()),
                                     track_id: None,
                                     artist_id: Some(artist.id.clone()),
                                     album_id: None,
@@ -1416,8 +1601,11 @@ impl TuiApp {
                         crate::search::SearchResultItem::Track(track) => {
                             // For artist search, create a pseudo-artist from track info
                             // Use artist_id for deduplication if available, otherwise fall back to artist name
-                            let dedup_key = track.artist_id.clone().unwrap_or_else(|| format!("track_artist_{}", track.artist));
-                            
+                            let dedup_key = track
+                                .artist_id
+                                .clone()
+                                .unwrap_or_else(|| format!("track_artist_{}", track.artist));
+
                             if seen_artist_ids.insert(dedup_key.clone()) {
                                 tracks.push(Track {
                                     id: track.artist_id.clone().unwrap_or_else(|| track.id.clone()),
@@ -1764,10 +1952,15 @@ impl TuiApp {
                             .map(|dab_track| Track::from_dab_track(dab_track))
                             .collect();
                         if !player_tracks.is_empty() {
-                            if let Err(e) = self.player.clear_and_play_tracks(player_tracks.clone()).await {
+                            if let Err(e) = self
+                                .player
+                                .clear_and_play_tracks(player_tracks.clone())
+                                .await
+                            {
                                 self.status_message = Some(format!("Failed to play album: {}", e));
                             } else {
-                                self.status_message = Some(format!("Playing album: {}", album.title));
+                                self.status_message =
+                                    Some(format!("Playing album: {}", album.title));
                             }
                         }
                     }
@@ -1789,6 +1982,8 @@ impl TuiApp {
                         }
                     }
                     self.status_message = Some(format!("Added {} tracks to queue", tracks.len()));
+                } else {
+                    self.status_message = Some("No tracks available to add next".to_string());
                 }
             }
             BackgroundTaskResult::ArtistSearchCompleted { query, artist_id } => {

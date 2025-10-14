@@ -67,6 +67,7 @@ pub struct FavoriteAlbum {
     pub artist_id: Option<String>,
     pub cover: Option<String>,
     pub release_date: Option<String>,
+    pub track_count: Option<u32>,
     pub added_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -79,6 +80,7 @@ impl From<&DabAlbum> for FavoriteAlbum {
             artist_id: album.artist_id.clone(),
             cover: album.cover.clone(),
             release_date: album.release_date.clone(),
+            track_count: album.track_count,
             added_at: chrono::Utc::now(),
         }
     }

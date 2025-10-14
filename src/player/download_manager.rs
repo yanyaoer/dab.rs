@@ -2,7 +2,7 @@ use log::{debug, error, info, warn};
 use reqwest::Client;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, RwLock};
 use tokio_util::sync::CancellationToken;
@@ -10,7 +10,16 @@ use tokio_util::sync::CancellationToken;
 use super::streaming::StreamingAudioSource;
 use super::Track;
 use crate::cache::Cache;
+use crate::config::{AudioQuality, Config};
 use crate::error::{DabError, DabResult};
+
+static CONFIGURED_AUDIO_QUALITY: OnceLock<AudioQuality> = OnceLock::new();
+
+fn configured_audio_quality() -> AudioQuality {
+    CONFIGURED_AUDIO_QUALITY
+        .get_or_init(|| Config::load().audio_quality)
+        .clone()
+}
 
 /// Commands for the download manager
 #[derive(Debug)]
@@ -249,15 +258,34 @@ impl AsyncDownloadManager {
         cache: Arc<RwLock<Cache>>,
         event_tx: mpsc::UnboundedSender<DownloadEvent>,
     ) -> DabResult<DownloadTask> {
+        // Load config to check streaming buffer setting
+        let config = Config::load();
+        let download_complete_before_play = config.streaming_buffer == 0;
+
         // Create streaming source with optimized buffer sizes based on track properties
-        let (min_buffer_mb, max_buffer_mb) = Self::calculate_optimal_buffer_sizes(&track);
-        let streaming_source = Arc::new(StreamingAudioSource::new(min_buffer_mb, max_buffer_mb));
+        let is_lossless = Self::is_lossless_stream(&track, &stream_url);
+
+        let streaming_source = if download_complete_before_play {
+            // Download complete mode: Use larger buffer to store entire file
+            info!("Using download-complete mode for track: {} (will download entire file before playback)", track.id);
+            // Use large buffer to store the complete file
+            Arc::new(StreamingAudioSource::new(50, 500)) // 50MB min, 500MB max for complete file storage
+        } else {
+            // Normal streaming mode with configured buffer size
+            let (min_buffer_mb, max_buffer_mb) =
+                Self::calculate_optimal_buffer_sizes(&track, is_lossless, config.streaming_buffer);
+            Arc::new(StreamingAudioSource::new(min_buffer_mb, max_buffer_mb))
+        };
 
         // Estimate bitrate if available from track metadata
-        if let Some(estimated_bitrate) = Self::estimate_track_bitrate(&track) {
+        if let Some(estimated_bitrate) = Self::estimate_track_bitrate(&track, is_lossless) {
             streaming_source
                 .set_estimated_bitrate(estimated_bitrate)
                 .await;
+        }
+
+        if is_lossless && !download_complete_before_play {
+            streaming_source.apply_lossless_profile().await;
         }
 
         let cancel_token = CancellationToken::new();
@@ -288,6 +316,7 @@ impl AsyncDownloadManager {
                     http_client,
                     cache,
                     event_tx.clone(),
+                    download_complete_before_play,
                 )
                 .await
                 {
@@ -324,11 +353,16 @@ impl AsyncDownloadManager {
         http_client: Client,
         cache: Arc<RwLock<Cache>>,
         event_tx: mpsc::UnboundedSender<DownloadEvent>,
+        download_complete_before_play: bool,
     ) -> DabResult<()> {
         let _ = event_tx.send(DownloadEvent::Started {
             track_id: track.id.clone(),
         });
 
+        debug!(
+            "Starting HTTP download for {} from {}",
+            track.id, stream_url
+        );
         let response = http_client.get(stream_url).send().await?;
         let response = response.error_for_status()?;
 
@@ -341,9 +375,14 @@ impl AsyncDownloadManager {
         let mut stream_ready_sent = false;
 
         info!(
-            "Starting download for track {} ({} bytes)",
-            track.id, content_length
+            "Starting download for track {} ({} bytes, download_complete_before_play={})",
+            track.id, content_length, download_complete_before_play
         );
+
+        // In download-complete mode, we'll send StreamReady only after download completes
+        if download_complete_before_play {
+            info!("Download-complete mode: Will signal stream ready after full download for track {}", track.id);
+        }
 
         use futures_util::StreamExt;
 
@@ -359,8 +398,10 @@ impl AsyncDownloadManager {
             // Write to streaming buffer
             streaming_source.write_data(&chunk).await?;
 
-            // Also collect for caching
-            temp_cache_data.extend_from_slice(&chunk);
+            // Also collect for caching (always collect in download-complete mode)
+            if download_complete_before_play || true {  // Always cache for now
+                temp_cache_data.extend_from_slice(&chunk);
+            }
 
             downloaded += chunk.len() as u64;
             bytes_downloaded.store(downloaded as u32, Ordering::Relaxed);
@@ -379,8 +420,8 @@ impl AsyncDownloadManager {
                 progress: progress_percent as f32 / 100.0,
             });
 
-            // Check if ready for streaming (adaptive threshold)
-            if !stream_ready_sent {
+            // Check if ready for streaming (skip in download-complete mode)
+            if !download_complete_before_play && !stream_ready_sent {
                 // Use the streaming source's own readiness check which includes format detection requirements
                 if streaming_source.is_ready_for_playback().await {
                     let _ = event_tx.send(DownloadEvent::StreamReady {
@@ -419,6 +460,15 @@ impl AsyncDownloadManager {
 
         // Mark download as complete
         streaming_source.mark_complete(downloaded as usize);
+
+        // In download-complete mode, send StreamReady event after download completes
+        if download_complete_before_play {
+            let _ = event_tx.send(DownloadEvent::StreamReady {
+                track_id: track.id.clone(),
+            });
+            info!("Download-complete mode: Track {} is now ready for playback ({} bytes downloaded)",
+                  track.id, downloaded);
+        }
 
         // Cache the complete file
         if !temp_cache_data.is_empty() {
@@ -477,66 +527,79 @@ impl AsyncDownloadManager {
     }
 
     /// Calculate optimal buffer sizes based on track properties
-    fn calculate_optimal_buffer_sizes(track: &Track) -> (u32, u32) {
-        // Default values
-        let mut min_buffer_mb = 5;
-        let mut max_buffer_mb = 100;
+    fn calculate_optimal_buffer_sizes(track: &Track, lossless: bool, streaming_buffer: u32) -> (u32, u32) {
+        // If streaming_buffer is specified, use it as both min and max
+        if streaming_buffer > 0 {
+            let configured_buffer = streaming_buffer.min(512); // Cap at 512MB
+            return (configured_buffer / 2, configured_buffer);
+        }
 
-        // Adjust based on track duration if available
+        // Default logic for automatic buffer sizing
+        let (mut min_buffer_mb, mut max_buffer_mb) = if lossless { (12, 256) } else { (5, 100) };
+
         if track.duration_ms > 0 {
             let duration_seconds = track.duration_ms / 1000;
             if duration_seconds < 60 {
-                // Short track - smaller buffer
-                min_buffer_mb = 3;
-                max_buffer_mb = 50;
+                if lossless {
+                    min_buffer_mb = 8;
+                    max_buffer_mb = 160;
+                } else {
+                    min_buffer_mb = 3;
+                    max_buffer_mb = 50;
+                }
             } else if duration_seconds > 600 {
-                // Long track - larger buffer for better stability
-                min_buffer_mb = 10;
-                max_buffer_mb = 200;
+                if lossless {
+                    min_buffer_mb = 20;
+                    max_buffer_mb = 320;
+                } else {
+                    min_buffer_mb = 10;
+                    max_buffer_mb = 200;
+                }
             }
         }
 
-        // Consider audio quality if available
-        // Note: audio_quality field would need to be added to Track struct
-        // if let Some(audio_quality) = &track.audio_quality {
-        //     if audio_quality.is_hi_res.unwrap_or(false) {
-        //         // Hi-res audio needs more buffer
-        //         min_buffer_mb = min_buffer_mb.max(15);
-        //         max_buffer_mb = max_buffer_mb.max(300);
-        //     }
-        // }
+        max_buffer_mb = max_buffer_mb.max(min_buffer_mb);
 
         debug!(
-            "Calculated buffer sizes for track {}: {}MB min, {}MB max",
-            track.id, min_buffer_mb, max_buffer_mb
+            "Calculated buffer sizes for track {}: {}MB min, {}MB max (lossless={}, configured={})",
+            track.id, min_buffer_mb, max_buffer_mb, lossless, streaming_buffer
         );
 
         (min_buffer_mb, max_buffer_mb)
     }
+    fn is_lossless_stream(track: &Track, stream_url: &str) -> bool {
+        let quality = configured_audio_quality();
+        if matches!(quality, AudioQuality::High) {
+            return true;
+        }
+
+        let url = stream_url.to_lowercase();
+        if url.contains("flac")
+            || url.contains("lossless")
+            || url.contains("hires")
+            || url.contains("wav")
+        {
+            return true;
+        }
+
+        let title = track.title.to_lowercase();
+        title.contains("flac") || title.contains("lossless") || title.contains("wav")
+    }
 
     /// Estimate track bitrate from metadata
-    fn estimate_track_bitrate(track: &Track) -> Option<u32> {
-        // Try to get bitrate from audio quality metadata
-        // Note: audio_quality field would need to be added to Track struct
-        // if let Some(audio_quality) = &track.audio_quality {
-        //     // High-res audio typically uses higher bitrates
-        //     if audio_quality.is_hi_res.unwrap_or(false) {
-        //         let sample_rate = audio_quality.maximum_sampling_rate.unwrap_or(44.1);
-        //         let bit_depth = audio_quality.maximum_bit_depth.unwrap_or(16);
-        //
-        //         // Estimate bitrate: sample_rate * bit_depth * 2 (stereo) / 1000
-        //         let estimated_kbps = (sample_rate * bit_depth as f32 * 2.0 / 1000.0) as u32;
-        //         debug!("Estimated hi-res bitrate: {} kbps", estimated_kbps);
-        //         return Some(estimated_kbps);
-        //     }
-        // }
+    fn estimate_track_bitrate(track: &Track, lossless: bool) -> Option<u32> {
+        if lossless {
+            // Assume at least CD-quality lossless (16-bit/44.1kHz stereo) or higher
+            return Some(2000);
+        }
 
-        // Default estimates based on common formats
-        // Most streaming services use variable bitrate, so these are conservative estimates
-        match track.title.to_lowercase() {
-            title if title.contains("flac") => Some(1000), // FLAC average
-            title if title.contains("wav") => Some(1411),  // CD quality WAV
-            _ => Some(320),                                // Default high-quality MP3/AAC
+        let title = track.title.to_lowercase();
+        if title.contains("flac") {
+            Some(1000)
+        } else if title.contains("wav") {
+            Some(1411)
+        } else {
+            Some(320)
         }
     }
 }

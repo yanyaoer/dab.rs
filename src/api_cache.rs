@@ -1,5 +1,5 @@
 use log::debug;
-use reqwest::header::{HeaderMap, HeaderValue, CACHE_CONTROL, EXPIRES, ETAG, LAST_MODIFIED};
+use reqwest::header::{HeaderMap, HeaderValue, CACHE_CONTROL, ETAG, EXPIRES, LAST_MODIFIED};
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 use tokio::sync::RwLock;
@@ -74,7 +74,7 @@ impl ApiCache {
     /// Get cached response if valid
     pub async fn get(&self, url: &str) -> Option<CachedResponse> {
         let cache = self.cache.read().await;
-        
+
         if let Some(entry) = cache.get(url) {
             if self.is_entry_valid(entry) {
                 debug!("Cache hit for URL: {}", url);
@@ -85,7 +85,7 @@ impl ApiCache {
         } else {
             debug!("Cache miss for URL: {}", url);
         }
-        
+
         None
     }
 
@@ -101,7 +101,7 @@ impl ApiCache {
         // Check if we need to remove old entries
         if cache.len() >= self.max_entries {
             self.evict_expired_entries(&mut cache);
-            
+
             // If still at capacity, remove oldest entry
             if cache.len() >= self.max_entries {
                 if let Some(oldest_key) = self.find_oldest_entry(&cache) {
@@ -113,7 +113,7 @@ impl ApiCache {
 
         let cached_at = SystemTime::now();
         let cache_directives = self.parse_cache_control(headers);
-        
+
         // Don't cache if no-store directive is present
         if cache_directives.no_store {
             debug!("Not caching due to no-store directive: {}", url);
@@ -136,7 +136,7 @@ impl ApiCache {
     /// Check if a cache entry should be revalidated
     pub async fn should_revalidate(&self, url: &str) -> Option<(String, String)> {
         let cache = self.cache.read().await;
-        
+
         if let Some(entry) = cache.get(url) {
             // If entry is expired or has must-revalidate, check for conditional headers
             if !self.is_entry_valid(entry) {
@@ -147,23 +147,23 @@ impl ApiCache {
                 }
             }
         }
-        
+
         None
     }
 
     /// Update cache entry if response is 304 Not Modified
     pub async fn update_on_not_modified(&self, url: &str, headers: &HeaderMap<HeaderValue>) {
         let mut cache = self.cache.write().await;
-        
+
         if let Some(entry) = cache.get_mut(url) {
             let cached_at = SystemTime::now();
             let cache_directives = self.parse_cache_control(headers);
-            
+
             // Update cache metadata
             entry.cached_at = cached_at;
             entry.expires_at = self.calculate_expires_at(&cache_directives, headers, cached_at);
             entry.max_age = cache_directives.max_age;
-            
+
             // Update ETags and Last-Modified if present
             if let Some(new_etag) = self.extract_header_value(headers, ETAG) {
                 entry.etag = Some(new_etag);
@@ -171,7 +171,7 @@ impl ApiCache {
             if let Some(new_last_modified) = self.extract_header_value(headers, LAST_MODIFIED) {
                 entry.last_modified = Some(new_last_modified);
             }
-            
+
             debug!("Updated cache entry on 304 Not Modified: {}", url);
         }
     }
@@ -187,10 +187,11 @@ impl ApiCache {
     pub async fn stats(&self) -> CacheStats {
         let cache = self.cache.read().await;
         let total_entries = cache.len();
-        let expired_entries = cache.values()
+        let expired_entries = cache
+            .values()
             .filter(|entry| !self.is_entry_valid(entry))
             .count();
-        
+
         CacheStats {
             total_entries,
             valid_entries: total_entries - expired_entries,
@@ -202,14 +203,14 @@ impl ApiCache {
     /// Check if cache entry is still valid
     fn is_entry_valid(&self, entry: &CacheEntry) -> bool {
         let now = SystemTime::now();
-        
+
         // Check explicit expiration time
         if let Some(expires_at) = entry.expires_at {
             if now > expires_at {
                 return false;
             }
         }
-        
+
         // Check max-age
         if let Some(max_age) = entry.max_age {
             if let Ok(age) = now.duration_since(entry.cached_at) {
@@ -218,7 +219,7 @@ impl ApiCache {
                 }
             }
         }
-        
+
         // If no explicit expiration, use default TTL
         if entry.expires_at.is_none() && entry.max_age.is_none() {
             if let Ok(age) = now.duration_since(entry.cached_at) {
@@ -227,7 +228,7 @@ impl ApiCache {
                 }
             }
         }
-        
+
         true
     }
 
@@ -245,7 +246,7 @@ impl ApiCache {
             if let Ok(cache_control_str) = cache_control.to_str() {
                 for directive in cache_control_str.split(',') {
                     let directive = directive.trim().to_lowercase();
-                    
+
                     if directive == "no-cache" {
                         directives.no_cache = true;
                     } else if directive == "no-store" {
@@ -329,7 +330,7 @@ impl ApiCache {
 #[derive(Debug)]
 pub struct CacheStats {
     pub total_entries: usize,
-    pub valid_entries: usize, 
+    pub valid_entries: usize,
     pub expired_entries: usize,
     pub max_entries: usize,
 }
@@ -342,7 +343,7 @@ mod httpdate {
     pub fn parse_http_date(_date_str: &str) -> Result<SystemTime, &'static str> {
         // Simple HTTP date parsing - in a real implementation you'd want to use
         // a proper HTTP date parsing library like `httpdate` crate
-        
+
         // For now, return current time + 1 hour as a placeholder
         // TODO: Implement proper HTTP date parsing or add httpdate crate
         Ok(SystemTime::now() + std::time::Duration::from_secs(3600))

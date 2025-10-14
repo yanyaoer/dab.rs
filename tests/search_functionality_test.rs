@@ -25,15 +25,15 @@ async fn test_dab_track_creation_and_validation() {
         downloadable: Some(true),
         audio_quality: Some("lossless".to_string()),
     };
-    
+
     assert_eq!(track.id, "track123");
     assert_eq!(track.title, "Test Song");
     assert_eq!(track.artist, "Test Artist");
     assert_eq!(track.duration, Some(180));
-    
+
     // Test validation
     assert!(track.is_valid());
-    
+
     // Test invalid track (empty title)
     let invalid_track = DabTrack {
         title: "".to_string(),
@@ -52,28 +52,26 @@ async fn test_dab_album_creation_and_validation() {
         release_date: Some("2023-01-01".to_string()),
         genre: Some("Rock".to_string()),
         cover: Some("https://example.com/cover.jpg".to_string()),
-        tracks: Some(vec![
-            DabTrack {
-                id: "track1".to_string(),
-                title: "Track 1".to_string(),
-                artist: "Test Artist".to_string(),
-                artist_id: Some("artist456".to_string()),
-                album: Some("Test Album".to_string()),
-                album_id: Some("album123".to_string()),
-                duration: Some(180),
-                track_number: Some(1),
-                disc_number: Some(1),
-                year: Some(2023),
-                genre: Some("Rock".to_string()),
-                explicit: Some(false),
-                popularity: None,
-                preview_url: None,
-                cover_url: None,
-                streamable: Some(true),
-                downloadable: Some(true),
-                audio_quality: None,
-            }
-        ]),
+        tracks: Some(vec![DabTrack {
+            id: "track1".to_string(),
+            title: "Track 1".to_string(),
+            artist: "Test Artist".to_string(),
+            artist_id: Some("artist456".to_string()),
+            album: Some("Test Album".to_string()),
+            album_id: Some("album123".to_string()),
+            duration: Some(180),
+            track_number: Some(1),
+            disc_number: Some(1),
+            year: Some(2023),
+            genre: Some("Rock".to_string()),
+            explicit: Some(false),
+            popularity: None,
+            preview_url: None,
+            cover_url: None,
+            streamable: Some(true),
+            downloadable: Some(true),
+            audio_quality: None,
+        }]),
         track_count: Some(1),
         duration: Some(180),
         label: Some("Test Label".to_string()),
@@ -87,7 +85,7 @@ async fn test_dab_album_creation_and_validation() {
         popularity: Some(80),
         audio_quality: Some("lossless".to_string()),
     };
-    
+
     assert_eq!(album.id, "album123");
     assert_eq!(album.title, "Test Album");
     assert_eq!(album.artist, "Test Artist");
@@ -108,7 +106,7 @@ async fn test_dab_artist_creation_and_validation() {
         tracklist: Some("https://api.example.com/artist/123/tracks".to_string()),
         type_field: Some("artist".to_string()),
     };
-    
+
     assert_eq!(artist.id, "artist123");
     assert_eq!(artist.name, "Test Artist");
     assert_eq!(artist.nb_album, Some(5));
@@ -124,7 +122,7 @@ async fn test_dab_music_api_initialization() {
 #[tokio::test]
 async fn test_search_tracks_api() {
     let mut server = Server::new_async().await;
-    
+
     let mock_response = json!({
         "data": {
             "tracks": [{
@@ -135,7 +133,7 @@ async fn test_search_tracks_api() {
                     "id": "456"
                 },
                 "album": {
-                    "title": "Test Album", 
+                    "title": "Test Album",
                     "id": "789"
                 },
                 "duration": 200,
@@ -145,7 +143,7 @@ async fn test_search_tracks_api() {
             }]
         }
     });
-    
+
     let _mock = server
         .mock("GET", "/search")
         .match_query(mockito::Matcher::AllOf(vec![
@@ -157,10 +155,10 @@ async fn test_search_tracks_api() {
         .with_body(mock_response.to_string())
         .create_async()
         .await;
-    
+
     let api = DabMusicApi::new(server.url());
     let result = api.search_tracks("test query").await;
-    
+
     assert!(result.is_ok());
     let tracks = result.unwrap();
     assert_eq!(tracks.len(), 1);
@@ -171,7 +169,7 @@ async fn test_search_tracks_api() {
 #[tokio::test]
 async fn test_search_albums_api() {
     let mut server = Server::new_async().await;
-    
+
     let mock_response = json!({
         "data": {
             "albums": [{
@@ -188,7 +186,7 @@ async fn test_search_albums_api() {
             }]
         }
     });
-    
+
     let _mock = server
         .mock("GET", "/search")
         .match_query(mockito::Matcher::AllOf(vec![
@@ -200,10 +198,10 @@ async fn test_search_albums_api() {
         .with_body(mock_response.to_string())
         .create_async()
         .await;
-    
+
     let api = DabMusicApi::new(server.url());
     let result = api.search_albums("test album").await;
-    
+
     assert!(result.is_ok());
     let albums = result.unwrap();
     assert_eq!(albums.len(), 1);
@@ -214,7 +212,7 @@ async fn test_search_albums_api() {
 #[tokio::test]
 async fn test_search_artists_api() {
     let mut server = Server::new_async().await;
-    
+
     let mock_response = json!({
         "data": {
             "artists": [{
@@ -227,7 +225,7 @@ async fn test_search_artists_api() {
             }]
         }
     });
-    
+
     let _mock = server
         .mock("GET", "/search")
         .match_query(mockito::Matcher::AllOf(vec![
@@ -239,10 +237,10 @@ async fn test_search_artists_api() {
         .with_body(mock_response.to_string())
         .create_async()
         .await;
-    
+
     let api = DabMusicApi::new(server.url());
     let result = api.search_artists("test artist").await;
-    
+
     assert!(result.is_ok());
     let artists = result.unwrap();
     assert_eq!(artists.len(), 1);
@@ -253,7 +251,7 @@ async fn test_search_artists_api() {
 #[tokio::test]
 async fn test_get_album_details() {
     let mut server = Server::new_async().await;
-    
+
     let mock_response = json!({
         "data": {
             "id": "album123",
@@ -269,7 +267,7 @@ async fn test_get_album_details() {
                 "duration": 240,
                 "track_position": 1
             }, {
-                "id": "track2", 
+                "id": "track2",
                 "title": "Track Two",
                 "duration": 180,
                 "track_position": 2
@@ -279,25 +277,28 @@ async fn test_get_album_details() {
             "cover_xl": "https://example.com/cover_xl.jpg"
         }
     });
-    
+
     let _mock = server
         .mock("GET", "/album")
-        .match_query(mockito::Matcher::UrlEncoded("albumId".into(), "album123".into()))
+        .match_query(mockito::Matcher::UrlEncoded(
+            "albumId".into(),
+            "album123".into(),
+        ))
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(mock_response.to_string())
         .create_async()
         .await;
-    
+
     let api = DabMusicApi::new(server.url());
     let result = api.get_album_details("album123").await;
-    
+
     assert!(result.is_ok());
     let album = result.unwrap();
     assert_eq!(album.title, "Detailed Album");
     assert_eq!(album.artist, "Detailed Artist");
     assert!(album.tracks.is_some());
-    
+
     let tracks = album.tracks.unwrap();
     assert_eq!(tracks.len(), 2);
     assert_eq!(tracks[0].title, "Track One");
@@ -307,7 +308,7 @@ async fn test_get_album_details() {
 #[tokio::test]
 async fn test_get_artist_discography() {
     let mut server = Server::new_async().await;
-    
+
     let mock_response = json!({
         "data": {
             "albums": [{
@@ -317,25 +318,28 @@ async fn test_get_artist_discography() {
                 "nb_tracks": 12
             }, {
                 "id": "album2",
-                "title": "Second Album", 
+                "title": "Second Album",
                 "release_date": "2022-01-01",
                 "nb_tracks": 10
             }]
         }
     });
-    
+
     let _mock = server
         .mock("GET", "/discography")
-        .match_query(mockito::Matcher::UrlEncoded("artistId".into(), "artist123".into()))
+        .match_query(mockito::Matcher::UrlEncoded(
+            "artistId".into(),
+            "artist123".into(),
+        ))
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(mock_response.to_string())
         .create_async()
         .await;
-    
+
     let api = DabMusicApi::new(server.url());
     let result = api.get_artist_discography("artist123").await;
-    
+
     assert!(result.is_ok());
     let albums = result.unwrap();
     assert_eq!(albums.len(), 2);
@@ -346,7 +350,7 @@ async fn test_get_artist_discography() {
 #[tokio::test]
 async fn test_get_stream_url() {
     let mut server = Server::new_async().await;
-    
+
     let mock_response = json!({
         "data": {
             "url": "https://stream.example.com/track123.mp3",
@@ -355,19 +359,22 @@ async fn test_get_stream_url() {
             "bitrate": 320
         }
     });
-    
+
     let _mock = server
         .mock("GET", "/stream")
-        .match_query(mockito::Matcher::UrlEncoded("trackId".into(), "track123".into()))
+        .match_query(mockito::Matcher::UrlEncoded(
+            "trackId".into(),
+            "track123".into(),
+        ))
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(mock_response.to_string())
         .create_async()
         .await;
-    
+
     let api = DabMusicApi::new(server.url());
     let result = api.get_stream_url("track123").await;
-    
+
     assert!(result.is_ok());
     let stream_url = result.unwrap();
     assert!(stream_url.starts_with("https://stream.example.com/"));
@@ -376,7 +383,7 @@ async fn test_get_stream_url() {
 #[tokio::test]
 async fn test_search_error_handling() {
     let mut server = Server::new_async().await;
-    
+
     // Mock 404 error
     let _mock = server
         .mock("GET", "/search")
@@ -384,10 +391,10 @@ async fn test_search_error_handling() {
         .with_body("Not Found")
         .create_async()
         .await;
-    
+
     let api = DabMusicApi::new(server.url());
     let result = api.search_tracks("nonexistent").await;
-    
+
     assert!(result.is_err());
     if let Err(e) = result {
         assert!(matches!(e, DabError::ApiError(_)));
@@ -397,13 +404,13 @@ async fn test_search_error_handling() {
 #[tokio::test]
 async fn test_search_empty_results() {
     let mut server = Server::new_async().await;
-    
+
     let empty_response = json!({
         "data": {
             "tracks": []
         }
     });
-    
+
     let _mock = server
         .mock("GET", "/search")
         .with_status(200)
@@ -411,10 +418,10 @@ async fn test_search_empty_results() {
         .with_body(empty_response.to_string())
         .create_async()
         .await;
-    
+
     let api = DabMusicApi::new(server.url());
     let result = api.search_tracks("no results").await;
-    
+
     assert!(result.is_ok());
     let tracks = result.unwrap();
     assert_eq!(tracks.len(), 0);
@@ -423,9 +430,9 @@ async fn test_search_empty_results() {
 #[tokio::test]
 async fn test_search_malformed_response() {
     let mut server = Server::new_async().await;
-    
+
     let malformed_response = "{ invalid json }";
-    
+
     let _mock = server
         .mock("GET", "/search")
         .with_status(200)
@@ -433,10 +440,10 @@ async fn test_search_malformed_response() {
         .with_body(malformed_response)
         .create_async()
         .await;
-    
+
     let api = DabMusicApi::new(server.url());
     let result = api.search_tracks("test").await;
-    
+
     assert!(result.is_err());
     if let Err(e) = result {
         assert!(matches!(e, DabError::ParseError(_)));
@@ -446,7 +453,7 @@ async fn test_search_malformed_response() {
 #[tokio::test]
 async fn test_search_with_special_characters() {
     let mut server = Server::new_async().await;
-    
+
     let mock_response = json!({
         "data": {
             "tracks": [{
@@ -464,7 +471,7 @@ async fn test_search_with_special_characters() {
             }]
         }
     });
-    
+
     let _mock = server
         .mock("GET", "/search")
         .with_status(200)
@@ -472,10 +479,10 @@ async fn test_search_with_special_characters() {
         .with_body(mock_response.to_string())
         .create_async()
         .await;
-    
+
     let api = DabMusicApi::new(server.url());
     let result = api.search_tracks("Café Müller").await;
-    
+
     assert!(result.is_ok());
     let tracks = result.unwrap();
     assert_eq!(tracks.len(), 1);
@@ -486,7 +493,7 @@ async fn test_search_with_special_characters() {
 #[tokio::test]
 async fn test_search_pagination() {
     let mut server = Server::new_async().await;
-    
+
     let mock_response = json!({
         "data": {
             "tracks": [
@@ -497,7 +504,7 @@ async fn test_search_pagination() {
                     "duration": 180
                 },
                 {
-                    "id": "track2", 
+                    "id": "track2",
                     "title": "Track 2",
                     "artist": {"name": "Artist", "id": "artist1"},
                     "duration": 200
@@ -508,7 +515,7 @@ async fn test_search_pagination() {
             "next": "https://api.example.com/search?q=test&type=track&index=25"
         }
     });
-    
+
     let _mock = server
         .mock("GET", "/search")
         .match_query(mockito::Matcher::AllOf(vec![
@@ -521,10 +528,10 @@ async fn test_search_pagination() {
         .with_body(mock_response.to_string())
         .create_async()
         .await;
-    
+
     let api = DabMusicApi::new(server.url());
     let result = api.search_tracks_with_limit("test", 25).await;
-    
+
     assert!(result.is_ok());
     let tracks = result.unwrap();
     assert_eq!(tracks.len(), 2);
@@ -533,7 +540,7 @@ async fn test_search_pagination() {
 #[tokio::test]
 async fn test_search_filters() {
     let mut server = Server::new_async().await;
-    
+
     let mock_response = json!({
         "data": {
             "tracks": [{
@@ -547,7 +554,7 @@ async fn test_search_filters() {
             }]
         }
     });
-    
+
     let _mock = server
         .mock("GET", "/search")
         .match_query(mockito::Matcher::AllOf(vec![
@@ -560,13 +567,13 @@ async fn test_search_filters() {
         .with_body(mock_response.to_string())
         .create_async()
         .await;
-    
+
     let api = DabMusicApi::new(server.url());
     let mut filters = HashMap::new();
     filters.insert("strict".to_string(), "on".to_string());
-    
+
     let result = api.search_tracks_with_filters("test", filters).await;
-    
+
     assert!(result.is_ok());
     let tracks = result.unwrap();
     assert_eq!(tracks.len(), 1);
@@ -576,7 +583,7 @@ async fn test_search_filters() {
 #[tokio::test]
 async fn test_concurrent_searches() {
     let mut server = Server::new_async().await;
-    
+
     let mock_response = json!({
         "data": {
             "tracks": [{
@@ -587,7 +594,7 @@ async fn test_concurrent_searches() {
             }]
         }
     });
-    
+
     let _mock = server
         .mock("GET", "/search")
         .with_status(200)
@@ -596,20 +603,20 @@ async fn test_concurrent_searches() {
         .expect_at_least(3)
         .create_async()
         .await;
-    
+
     let api = DabMusicApi::new(server.url());
-    
+
     // Perform multiple concurrent searches
     let search1 = api.search_tracks("query1");
     let search2 = api.search_tracks("query2");
     let search3 = api.search_tracks("query3");
-    
+
     let (result1, result2, result3) = tokio::join!(search1, search2, search3);
-    
+
     assert!(result1.is_ok());
     assert!(result2.is_ok());
     assert!(result3.is_ok());
-    
+
     assert_eq!(result1.unwrap().len(), 1);
     assert_eq!(result2.unwrap().len(), 1);
     assert_eq!(result3.unwrap().len(), 1);

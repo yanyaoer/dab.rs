@@ -12,6 +12,7 @@ mod config;
 mod error;
 mod id_utils;
 mod library;
+mod music_provider;
 mod player;
 mod search;
 mod tui;

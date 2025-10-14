@@ -117,8 +117,17 @@ All song lists support consistent key bindings:
 
 ## API Integration
 
-### OpenAPI Schema
-The project integrates with a music API defined in `resource/openapi.yaml`:
+### Squid API (Default Backend)
+The project now uses Squid API as the default backend with specific query parameters:
+- **Track Search**: `/search/?s=query`
+- **Album Search**: `/search/?al=query`
+- **Artist Search**: `/search/?a=query`
+- **Album Details**: `/album/?id=albumId`
+- **Artist Discography**: `/discography/?artistId=artistId`
+- **Stream URLs**: `/track/?id=trackId&quality=LOSSLESS`
+
+### OpenAPI Schema (Legacy)
+The original DAB API defined in `resource/openapi.yaml`:
 - **Search**: `/search?q=query&type=track|album|artist`
 - **Album Details**: `/album?albumId=id`
 - **Artist Discography**: `/discography?artistId=id`

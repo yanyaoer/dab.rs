@@ -35,8 +35,8 @@ pub enum PlayerState {
 
 #[derive(Debug)]
 pub enum PlayerCommand {
-    LoadAndPlay(String),     // Keep for backwards compatibility
-    LoadAndPlayTrack(Track), // New command that accepts Track directly
+    // Simplified commands - use Track for all operations
+    LoadAndPlayTrack(Track),
     Play,
     Pause,
     Resume,
@@ -44,12 +44,9 @@ pub enum PlayerCommand {
     Next,
     Previous,
     Seek(u32),
-    AddToQueue(String),             // Keep for backwards compatibility
-    AddTrackToQueue(Track),         // New command that accepts Track directly
-    AddNext(String),                // Keep for backwards compatibility
-    AddTrackNext(Track),            // New command that accepts Track directly
-    ClearAndPlay(Vec<String>),      // Keep for backwards compatibility
-    ClearAndPlayTracks(Vec<Track>), // New command that accepts Tracks directly
+    AddTrackToQueue(Track),
+    AddTrackNext(Track),
+    ClearAndPlayTracks(Vec<Track>),
     SetVolume(f32),
     SetRepeatMode(RepeatMode),
     GetStatus(tokio::sync::oneshot::Sender<PlayerStatus>),

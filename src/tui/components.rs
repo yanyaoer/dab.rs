@@ -269,19 +269,29 @@ impl UnifiedList {
                     Style::default().fg(Color::DarkGray),
                 ),
             ])),
-            ListItemType::FavoriteAlbum(album) => ListItem::new(Line::from(vec![
-                Span::styled(
-                    format!("{} - {}", album.artist, album.title),
-                    Style::default().fg(Color::White),
-                ),
-                Span::styled(
-                    format!(
-                        " ({})",
-                        album.release_date.as_deref().unwrap_or("Unknown year")
+            ListItemType::FavoriteAlbum(album) => {
+                let release_year = album
+                    .release_date
+                    .as_ref()
+                    .and_then(|date| date.split('-').next())
+                    .unwrap_or("Unknown");
+
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        format!("{:<30}", album.title),
+                        Style::default().fg(Color::White),
                     ),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ])),
+                    Span::styled(" - ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        format!("{:<20}", album.artist),
+                        Style::default().fg(Color::Cyan),
+                    ),
+                    Span::styled(
+                        format!(" ({}, {} tracks)", release_year, album.track_count.unwrap_or(0)),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]))
+            },
             ListItemType::DabAlbum(album) => {
                 let release_year = album
                     .release_date
@@ -291,16 +301,17 @@ impl UnifiedList {
 
                 ListItem::new(Line::from(vec![
                     Span::styled(
-                        format!("{:<40}", album.title),
+                        format!("{:<30}", album.title),
                         Style::default().fg(Color::White),
                     ),
+                    Span::styled(" - ", Style::default().fg(Color::DarkGray)),
                     Span::styled(
-                        format!("{:<10}", release_year),
-                        Style::default().fg(Color::Yellow),
+                        format!("{:<20}", album.artist),
+                        Style::default().fg(Color::Cyan),
                     ),
                     Span::styled(
-                        format!("{} tracks", album.track_count.unwrap_or(0)),
-                        Style::default().fg(Color::Gray),
+                        format!(" ({}, {} tracks)", release_year, album.track_count.unwrap_or(0)),
+                        Style::default().fg(Color::DarkGray),
                     ),
                 ]))
             }

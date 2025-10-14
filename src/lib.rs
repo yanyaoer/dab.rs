@@ -6,6 +6,7 @@ pub mod config;
 pub mod error;
 pub mod id_utils;
 pub mod library;
+pub mod music_provider;
 pub mod player;
 pub mod search;
 pub mod tui;

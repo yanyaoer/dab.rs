@@ -617,6 +617,7 @@ dependencies = [
  "image",
  "log",
  "md5",
+ "rand 0.8.5",
  "ratatui",
  "reqwest",
  "rodio",

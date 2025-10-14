@@ -6,6 +6,7 @@ use crate::player::PlayerEngine;
 use crate::tui::TuiApp;
 use clap::{Parser, Subcommand};
 use log::{error, info};
+use std::time::Duration;
 
 #[derive(Parser)]
 #[command(name = "dab")]
@@ -81,6 +82,12 @@ impl Cli {
                 if let Some(track_id) = track {
                     info!("Loading and playing track: {}", track_id);
                     player.load_and_play(&track_id).await?;
+
+                    if let Ok(wait_value) = std::env::var("DAB_DEBUG_WAIT_SECS") {
+                        if let Ok(wait_secs) = wait_value.parse::<u64>() {
+                            tokio::time::sleep(Duration::from_secs(wait_secs)).await;
+                        }
+                    }
                 } else {
                     info!("Starting playback");
                     player.play().await?;

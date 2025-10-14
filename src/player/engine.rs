@@ -171,34 +171,6 @@ impl PlayerEngine {
         debug!("Handling command: {:?}", command);
 
         match command {
-            PlayerCommand::LoadAndPlay(track_identifier) => {
-                // Try to find the track in the queue first
-                let queue_tracks = queue.get_queue().await;
-                let track = if let Some(found_track) = queue_tracks.iter().find(|t| {
-                    t.id == track_identifier || t.local_path.as_ref() == Some(&track_identifier)
-                }) {
-                    found_track.clone()
-                } else {
-                    // Fallback: create track from URL for backwards compatibility
-                    Track::from_url(&track_identifier)
-                };
-
-                Self::load_and_play_track_internal(
-                    &track,
-                    event_tx,
-                    state,
-                    current_track,
-                    position_ms,
-                    volume,
-                    repeat_mode,
-                    queue,
-                    loader,
-                    audio_sink,
-                    search_api,
-                    stream_url_cache,
-                )
-                .await?;
-            }
             PlayerCommand::LoadAndPlayTrack(track) => {
                 Self::load_and_play_track_internal(
                     &track,
@@ -317,23 +289,6 @@ impl PlayerEngine {
                 *position_ms.write().await = pos;
                 let _ = event_tx.send(PlayerEvent::PositionChanged(pos));
             }
-            PlayerCommand::AddToQueue(track_identifier) => {
-                // Try to resolve track from identifier - could be URL, track ID, or local path
-                let track = Self::resolve_track_from_identifier(&track_identifier, search_api)
-                    .await
-                    .unwrap_or_else(|_| Track::from_url(&track_identifier));
-
-                queue.add_track(track.clone()).await;
-                let _ = event_tx.send(PlayerEvent::QueueChanged);
-
-                // Start preloading in background
-                let loader = loader.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = loader.preload_track(&track).await {
-                        warn!("Failed to preload track: {}", e);
-                    }
-                });
-            }
             PlayerCommand::AddTrackToQueue(track) => {
                 queue.add_track(track.clone()).await;
                 let _ = event_tx.send(PlayerEvent::QueueChanged);
@@ -346,45 +301,8 @@ impl PlayerEngine {
                     }
                 });
             }
-            PlayerCommand::AddNext(track_identifier) => {
-                // Try to resolve track from identifier
-                let track = Self::resolve_track_from_identifier(&track_identifier, search_api)
-                    .await
-                    .unwrap_or_else(|_| Track::from_url(&track_identifier));
-
-                queue.add_track_next(track).await;
-                let _ = event_tx.send(PlayerEvent::QueueChanged);
-            }
             PlayerCommand::AddTrackNext(track) => {
                 queue.add_track_next(track).await;
-                let _ = event_tx.send(PlayerEvent::QueueChanged);
-            }
-            PlayerCommand::ClearAndPlay(track_identifiers) => {
-                queue.clear().await;
-                for identifier in track_identifiers {
-                    // Try to resolve each track from identifier
-                    let track = Self::resolve_track_from_identifier(&identifier, search_api)
-                        .await
-                        .unwrap_or_else(|_| Track::from_url(&identifier));
-                    queue.add_track(track).await;
-                }
-                if let Some(track) = queue.next_track().await {
-                    Self::load_and_play_track_internal(
-                        &track,
-                        event_tx,
-                        state,
-                        current_track,
-                        position_ms,
-                        volume,
-                        repeat_mode,
-                        queue,
-                        loader,
-                        audio_sink,
-                        search_api,
-                        stream_url_cache,
-                    )
-                    .await?;
-                }
                 let _ = event_tx.send(PlayerEvent::QueueChanged);
             }
             PlayerCommand::ClearAndPlayTracks(tracks) => {
@@ -500,7 +418,9 @@ impl PlayerEngine {
         match load_result {
             LoadResult::Seekable(audio_source) => {
                 // Traditional seekable playback
+                info!("DOWNLOAD-COMPLETE: Using seekable playback path for track: {}", track.title);
                 let decoder = AudioDecoder::from_seekable(audio_source)?;
+                info!("DOWNLOAD-COMPLETE: Created AudioDecoder::from_seekable (no StreamingWrapper)");
 
                 // Stop any current playback
                 audio_sink.read().await.stop()?;
@@ -510,6 +430,29 @@ impl PlayerEngine {
 
                 // Start playback
                 audio_sink.write().await.play(decoder, volume_value)?;
+
+                // Update current track
+                *current_track.write().await = Some(track.clone());
+                *position_ms.write().await = 0;
+
+                let _ = event_tx.send(PlayerEvent::TrackChanged(track.clone()));
+
+                // Start playing
+                *state.write().await = PlayerState::Playing;
+                let _ = event_tx.send(PlayerEvent::StateChanged(PlayerState::Playing));
+            }
+            LoadResult::InMemory(audio_data) => {
+                // Simple in-memory playback (like test_squid_direct)
+                info!("DOWNLOAD-COMPLETE: Using simple in-memory playback for track: {} ({} bytes)", track.title, audio_data.len());
+
+                // Stop any current playback
+                audio_sink.read().await.stop()?;
+
+                // Get current volume
+                let volume_value = *volume.read().await;
+
+                // Play directly from memory using rodio (bypassing symphonia)
+                audio_sink.write().await.play_from_memory(audio_data, volume_value)?;
 
                 // Update current track
                 *current_track.write().await = Some(track.clone());
@@ -690,8 +633,11 @@ impl PlayerEngine {
     }
 
     pub async fn load_and_play(&mut self, track_or_url: &str) -> DabResult<()> {
-        // For backwards compatibility, treat input as URL
-        self.send_command(PlayerCommand::LoadAndPlay(track_or_url.to_string()))
+        // Convert string identifier to Track
+        let track = Self::resolve_track_from_identifier(track_or_url, &self.search_api)
+            .await
+            .unwrap_or_else(|_| Track::from_url(track_or_url));
+        self.send_command(PlayerCommand::LoadAndPlayTrack(track))
             .await
     }
 
@@ -725,7 +671,10 @@ impl PlayerEngine {
     }
 
     pub async fn add_to_queue(&mut self, url: &str) -> DabResult<()> {
-        self.send_command(PlayerCommand::AddToQueue(url.to_string()))
+        let track = Self::resolve_track_from_identifier(url, &self.search_api)
+            .await
+            .unwrap_or_else(|_| Track::from_url(url));
+        self.send_command(PlayerCommand::AddTrackToQueue(track))
             .await
     }
 
@@ -735,7 +684,10 @@ impl PlayerEngine {
     }
 
     pub async fn add_next(&mut self, url: &str) -> DabResult<()> {
-        self.send_command(PlayerCommand::AddNext(url.to_string()))
+        let track = Self::resolve_track_from_identifier(url, &self.search_api)
+            .await
+            .unwrap_or_else(|_| Track::from_url(url));
+        self.send_command(PlayerCommand::AddTrackNext(track))
             .await
     }
 
@@ -744,7 +696,15 @@ impl PlayerEngine {
     }
 
     pub async fn clear_and_play(&mut self, urls: Vec<String>) -> DabResult<()> {
-        self.send_command(PlayerCommand::ClearAndPlay(urls)).await
+        let mut tracks = Vec::new();
+        for url in urls {
+            let track = Self::resolve_track_from_identifier(&url, &self.search_api)
+                .await
+                .unwrap_or_else(|_| Track::from_url(&url));
+            tracks.push(track);
+        }
+        self.send_command(PlayerCommand::ClearAndPlayTracks(tracks))
+            .await
     }
 
     pub async fn clear_and_play_tracks(&mut self, tracks: Vec<Track>) -> DabResult<()> {
@@ -858,6 +818,43 @@ impl PlayerEngine {
                     }
                 }
             }
+        }
+
+        // If the identifier looks like a raw track ID (numeric), try to resolve it directly
+        if identifier.chars().all(|c| c.is_ascii_digit()) {
+            if let Ok(search_result) = search_api.search(identifier, "track", 1).await {
+                let mut fallback_track: Option<crate::search::DabTrack> = None;
+
+                for item in search_result.get_results() {
+                    if let crate::search::SearchResultItem::Track(dab_track) = item {
+                        if dab_track.id == identifier {
+                            return Ok(Track::from_dab_track(&dab_track));
+                        }
+
+                        if fallback_track.is_none() {
+                            fallback_track = Some(dab_track.clone());
+                        }
+                    }
+                }
+
+                if let Some(dab_track) = fallback_track {
+                    return Ok(Track::from_dab_track(&dab_track));
+                }
+            }
+
+            // Fallback stub track with minimal metadata but correct track ID
+            return Ok(Track {
+                id: identifier.to_string(),
+                title: format!("Track {}", identifier),
+                artist: "Unknown Artist".to_string(),
+                album: "Unknown Album".to_string(),
+                duration_ms: 0,
+                local_path: None,
+                cover_url: None,
+                track_id: Some(identifier.to_string()),
+                artist_id: None,
+                album_id: None,
+            });
         }
 
         // If all else fails, treat as URL

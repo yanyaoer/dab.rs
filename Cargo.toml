@@ -38,6 +38,7 @@ urlencoding = "2.1"
 tempfile = "3.10"
 sha2 = "0.10"
 hex = "0.4"
+rand = "0.8"
 
 # ID3 tag reading
 id3 = "1.13"

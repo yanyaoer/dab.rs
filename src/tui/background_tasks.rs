@@ -7,24 +7,12 @@ use tokio::sync::mpsc;
 /// Background task types for non-blocking operations
 #[derive(Debug, Clone)]
 pub enum BackgroundTask {
-    LoadAlbum {
-        album_id: String,
-    },
-    LoadAlbumForPlay {
-        album_id: String,
-    },
-    SearchArtist {
-        query: String,
-    },
-    LoadDiscography {
-        artist_id: String,
-    },
-    BatchLoadAlbums {
-        album_ids: Vec<String>,
-    },
-    LoadAlbumForAddNext {
-        album_id: String,
-    },
+    LoadAlbum { album_id: String },
+    LoadAlbumForPlay { album_id: String },
+    SearchArtist { query: String },
+    LoadDiscography { artist_id: String },
+    BatchLoadAlbums { album_ids: Vec<String> },
+    LoadAlbumForAddNext { album_id: String },
 }
 
 /// Results from background tasks
@@ -158,10 +146,7 @@ impl BackgroundTaskProcessor {
                                         }
                                     }
                                 }
-                                BackgroundTaskResult::ArtistSearchCompleted {
-                                    query,
-                                    artist_id,
-                                }
+                                BackgroundTaskResult::ArtistSearchCompleted { query, artist_id }
                             }
                             Err(e) => BackgroundTaskResult::Error {
                                 task: task_clone,
@@ -171,10 +156,9 @@ impl BackgroundTaskProcessor {
                     }
                     BackgroundTask::LoadDiscography { artist_id } => {
                         match network_client.get_artist_discography(artist_id).await {
-                            Ok((artist, albums)) => BackgroundTaskResult::DiscographyLoaded {
-                                artist,
-                                albums,
-                            },
+                            Ok((artist, albums)) => {
+                                BackgroundTaskResult::DiscographyLoaded { artist, albums }
+                            }
                             Err(e) => BackgroundTaskResult::Error {
                                 task: task_clone,
                                 error: e.to_string(),
@@ -204,7 +188,10 @@ impl BackgroundTaskProcessor {
                             }
                         }
 
-                        BackgroundTaskResult::BatchAlbumsLoaded { albums, tracks: all_tracks }
+                        BackgroundTaskResult::BatchAlbumsLoaded {
+                            albums,
+                            tracks: all_tracks,
+                        }
                     }
                 };
 

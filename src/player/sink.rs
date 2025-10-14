@@ -1,5 +1,6 @@
-use log::{debug, info};
-use rodio::{OutputStream, OutputStreamHandle, Sink};
+use log::{debug, info, warn};
+use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink};
+use std::io::{BufReader, Cursor};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -9,8 +10,9 @@ use crate::error::{DabError, DabResult};
 
 // Wrapper to make AudioSink Send + Sync by using Send/Sync types internally
 pub struct AudioSink {
-    _stream: OutputStream,
-    stream_handle: OutputStreamHandle,
+    stream: Option<OutputStream>,
+    stream_handle: Option<OutputStreamHandle>,
+    audio_disabled: bool,
     sink: Arc<Mutex<Option<Sink>>>,
     volume: Arc<Mutex<f32>>,
     // Position tracking
@@ -26,14 +28,24 @@ unsafe impl Sync for AudioSink {}
 
 impl AudioSink {
     pub fn new() -> DabResult<Self> {
-        let (_stream, stream_handle) = OutputStream::try_default()
-            .map_err(|e| DabError::Audio(format!("Failed to create audio stream: {}", e)))?;
-
-        info!("Audio sink initialized");
+        let (stream, stream_handle, audio_disabled) = match OutputStream::try_default() {
+            Ok((stream, handle)) => {
+                info!("Audio sink initialized");
+                (Some(stream), Some(handle), false)
+            }
+            Err(e) => {
+                warn!(
+                    "Audio output not available: {}. Continuing in silent mode",
+                    e
+                );
+                (None, None, true)
+            }
+        };
 
         Ok(Self {
-            _stream,
+            stream,
             stream_handle,
+            audio_disabled,
             sink: Arc::new(Mutex::new(None)),
             volume: Arc::new(Mutex::new(0.8)),
             start_time: Arc::new(Mutex::new(None)),
@@ -43,8 +55,16 @@ impl AudioSink {
     }
 
     pub fn play(&mut self, decoder: AudioDecoder, volume: f32) -> DabResult<()> {
+        if self.audio_disabled {
+            info!("Audio disabled; skipping playback");
+            *self.start_time.lock().unwrap() = Some(Instant::now());
+            *self.paused_duration.lock().unwrap() = Duration::ZERO;
+            *self.last_pause_time.lock().unwrap() = None;
+            return Ok(());
+        }
+
         // Create new sink
-        let sink = Sink::try_new(&self.stream_handle)
+        let sink = Sink::try_new(self.stream_handle.as_ref().unwrap())
             .map_err(|e| DabError::Audio(format!("Failed to create sink: {}", e)))?;
 
         sink.set_volume(volume);
@@ -70,7 +90,53 @@ impl AudioSink {
         Ok(())
     }
 
+    /// Play audio directly from memory using rodio (like test_squid_direct)
+    pub fn play_from_memory(&mut self, audio_data: Vec<u8>, volume: f32) -> DabResult<()> {
+        if self.audio_disabled {
+            info!("Audio disabled; skipping playback");
+            *self.start_time.lock().unwrap() = Some(Instant::now());
+            *self.paused_duration.lock().unwrap() = Duration::ZERO;
+            *self.last_pause_time.lock().unwrap() = None;
+            return Ok(());
+        }
+
+        info!("Playing audio from memory buffer ({} bytes) using rodio directly", audio_data.len());
+
+        // Create new sink
+        let sink = Sink::try_new(self.stream_handle.as_ref().unwrap())
+            .map_err(|e| DabError::Audio(format!("Failed to create sink: {}", e)))?;
+
+        sink.set_volume(volume);
+
+        // Create decoder directly from memory (like test_squid_direct)
+        let cursor = Cursor::new(audio_data);
+        let buf_reader = BufReader::new(cursor);
+
+        let source = Decoder::new(buf_reader)
+            .map_err(|e| DabError::Audio(format!("Failed to create rodio decoder: {}", e)))?;
+
+        // Add the source to the sink and play
+        sink.append(source);
+        sink.play();
+
+        // Store sink
+        *self.sink.lock().unwrap() = Some(sink);
+        *self.volume.lock().unwrap() = volume;
+
+        // Reset position tracking for new track
+        *self.start_time.lock().unwrap() = Some(Instant::now());
+        *self.paused_duration.lock().unwrap() = Duration::ZERO;
+        *self.last_pause_time.lock().unwrap() = None;
+
+        info!("Started playback with rodio decoder (bypassing symphonia)");
+        Ok(())
+    }
+
     pub fn pause(&self) -> DabResult<()> {
+        if self.audio_disabled {
+            return Ok(());
+        }
+
         if let Some(ref sink) = *self.sink.lock().unwrap() {
             sink.pause();
             // Record pause time for position tracking
@@ -81,6 +147,10 @@ impl AudioSink {
     }
 
     pub fn resume(&self) -> DabResult<()> {
+        if self.audio_disabled {
+            return Ok(());
+        }
+
         if let Some(ref sink) = *self.sink.lock().unwrap() {
             sink.play();
             // Update paused duration when resuming
@@ -94,6 +164,13 @@ impl AudioSink {
     }
 
     pub fn stop(&self) -> DabResult<()> {
+        if self.audio_disabled {
+            *self.start_time.lock().unwrap() = None;
+            *self.paused_duration.lock().unwrap() = Duration::ZERO;
+            *self.last_pause_time.lock().unwrap() = None;
+            return Ok(());
+        }
+
         if let Some(sink) = self.sink.lock().unwrap().take() {
             sink.stop();
             // Reset position tracking
@@ -108,6 +185,11 @@ impl AudioSink {
     pub fn set_volume(&self, volume: f32) -> DabResult<()> {
         let clamped_volume = volume.clamp(0.0, 1.0);
 
+        if self.audio_disabled {
+            *self.volume.lock().unwrap() = clamped_volume;
+            return Ok(());
+        }
+
         if let Some(ref sink) = *self.sink.lock().unwrap() {
             sink.set_volume(clamped_volume);
         }
@@ -118,6 +200,10 @@ impl AudioSink {
     }
 
     pub fn is_paused(&self) -> bool {
+        if self.audio_disabled {
+            return true;
+        }
+
         if let Some(ref sink) = *self.sink.lock().unwrap() {
             sink.is_paused()
         } else {
@@ -126,6 +212,10 @@ impl AudioSink {
     }
 
     pub fn is_empty(&self) -> bool {
+        if self.audio_disabled {
+            return true;
+        }
+
         if let Some(ref sink) = *self.sink.lock().unwrap() {
             sink.empty()
         } else {
@@ -138,6 +228,10 @@ impl AudioSink {
         let start_time_guard = self.start_time.lock().unwrap();
         let paused_duration_guard = self.paused_duration.lock().unwrap();
         let last_pause_time_guard = self.last_pause_time.lock().unwrap();
+
+        if self.audio_disabled {
+            return 0;
+        }
 
         if let Some(start_time) = *start_time_guard {
             let total_elapsed = start_time.elapsed();

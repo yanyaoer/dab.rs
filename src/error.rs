@@ -31,4 +31,7 @@ pub enum DabError {
 
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+
+    #[error("Temporary buffer underrun during streaming")]
+    TemporaryBufferUnderrun,
 }
