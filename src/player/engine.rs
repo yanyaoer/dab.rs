@@ -418,9 +418,14 @@ impl PlayerEngine {
         match load_result {
             LoadResult::Seekable(audio_source) => {
                 // Traditional seekable playback
-                info!("DOWNLOAD-COMPLETE: Using seekable playback path for track: {}", track.title);
+                info!(
+                    "DOWNLOAD-COMPLETE: Using seekable playback path for track: {}",
+                    track.title
+                );
                 let decoder = AudioDecoder::from_seekable(audio_source)?;
-                info!("DOWNLOAD-COMPLETE: Created AudioDecoder::from_seekable (no StreamingWrapper)");
+                info!(
+                    "DOWNLOAD-COMPLETE: Created AudioDecoder::from_seekable (no StreamingWrapper)"
+                );
 
                 // Stop any current playback
                 audio_sink.read().await.stop()?;
@@ -443,7 +448,11 @@ impl PlayerEngine {
             }
             LoadResult::InMemory(audio_data) => {
                 // Simple in-memory playback (like test_squid_direct)
-                info!("DOWNLOAD-COMPLETE: Using simple in-memory playback for track: {} ({} bytes)", track.title, audio_data.len());
+                info!(
+                    "DOWNLOAD-COMPLETE: Using simple in-memory playback for track: {} ({} bytes)",
+                    track.title,
+                    audio_data.len()
+                );
 
                 // Stop any current playback
                 audio_sink.read().await.stop()?;
@@ -452,7 +461,10 @@ impl PlayerEngine {
                 let volume_value = *volume.read().await;
 
                 // Play directly from memory using rodio (bypassing symphonia)
-                audio_sink.write().await.play_from_memory(audio_data, volume_value)?;
+                audio_sink
+                    .write()
+                    .await
+                    .play_from_memory(audio_data, volume_value)?;
 
                 // Update current track
                 *current_track.write().await = Some(track.clone());
@@ -687,8 +699,7 @@ impl PlayerEngine {
         let track = Self::resolve_track_from_identifier(url, &self.search_api)
             .await
             .unwrap_or_else(|_| Track::from_url(url));
-        self.send_command(PlayerCommand::AddTrackNext(track))
-            .await
+        self.send_command(PlayerCommand::AddTrackNext(track)).await
     }
 
     pub async fn add_track_next(&mut self, track: Track) -> DabResult<()> {

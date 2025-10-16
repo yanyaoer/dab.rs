@@ -32,7 +32,10 @@ fn main() {
         println!("4. Use rodio::Decoder directly");
         println!("5. Play through rodio::Sink");
     } else {
-        println!("\n⚠️ Streaming mode enabled (buffer: {} MB)", config.streaming_buffer);
+        println!(
+            "\n⚠️ Streaming mode enabled (buffer: {} MB)",
+            config.streaming_buffer
+        );
         println!("Set DAB_STREAMING_BUFFER=0 to enable download-complete mode");
     }
 

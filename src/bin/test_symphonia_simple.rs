@@ -102,7 +102,8 @@ impl SimpleStreamBuffer {
 
             let second_part = (to_read - first_part).min(other_buffer.len());
             if second_part > 0 {
-                buf[first_part..first_part + second_part].copy_from_slice(&other_buffer[..second_part]);
+                buf[first_part..first_part + second_part]
+                    .copy_from_slice(&other_buffer[..second_part]);
                 self.read_pos = second_part;
             }
 
@@ -173,12 +174,16 @@ impl Read for SimplifiedReader {
                 let now = Instant::now();
 
                 // 只在距离上次underrun超过100ms时打印
-                let should_print = buffer.last_underrun
+                let should_print = buffer
+                    .last_underrun
                     .map(|last| now.duration_since(last) > Duration::from_millis(100))
                     .unwrap_or(true);
 
                 if should_print {
-                    println!("⚠️  Buffer underrun #{} - inserting silence", buffer.underrun_count);
+                    println!(
+                        "⚠️  Buffer underrun #{} - inserting silence",
+                        buffer.underrun_count
+                    );
                     buffer.last_underrun = Some(now);
                 }
 
@@ -240,20 +245,18 @@ impl SimplifiedAudioSource {
 
     fn load_next_packet(&mut self) -> bool {
         match self.format.next_packet() {
-            Ok(packet) => {
-                match self.decoder.decode(&packet) {
-                    Ok(decoded) => {
-                        let spec = decoded.spec();
-                        let duration = decoded.capacity() as u64;
-                        let mut sample_buffer = SampleBuffer::<f32>::new(duration, *spec);
-                        sample_buffer.copy_interleaved_ref(decoded);
-                        self.current_samples = sample_buffer.samples().to_vec();
-                        self.sample_index = 0;
-                        true
-                    }
-                    Err(_) => false,
+            Ok(packet) => match self.decoder.decode(&packet) {
+                Ok(decoded) => {
+                    let spec = decoded.spec();
+                    let duration = decoded.capacity() as u64;
+                    let mut sample_buffer = SampleBuffer::<f32>::new(duration, *spec);
+                    sample_buffer.copy_interleaved_ref(decoded);
+                    self.current_samples = sample_buffer.samples().to_vec();
+                    self.sample_index = 0;
+                    true
                 }
-            }
+                Err(_) => false,
+            },
             Err(_) => false,
         }
     }
@@ -344,9 +347,11 @@ async fn test_simplified_streaming(url: &str) {
         let buf = buffer.lock().unwrap();
         let mb_available = buf.bytes_available() as f32 / (1024.0 * 1024.0);
         if mb_available >= 2.0 {
-            println!("✅ Buffered {:.1} MB in {:.1}s",
-                     mb_available,
-                     start_time.elapsed().as_secs_f32());
+            println!(
+                "✅ Buffered {:.1} MB in {:.1}s",
+                mb_available,
+                start_time.elapsed().as_secs_f32()
+            );
             drop(buf);
             break;
         }
@@ -371,7 +376,8 @@ async fn test_simplified_streaming(url: &str) {
     };
 
     let mut format = probed.format;
-    let track = format.tracks()
+    let track = format
+        .tracks()
         .iter()
         .find(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
         .expect("No supported audio tracks");
@@ -381,11 +387,16 @@ async fn test_simplified_streaming(url: &str) {
         .expect("Failed to create decoder");
 
     let sample_rate = track.codec_params.sample_rate.unwrap_or(44100);
-    let channels = track.codec_params.channels
+    let channels = track
+        .codec_params
+        .channels
         .map(|ch| ch.count() as u16)
         .unwrap_or(2);
 
-    println!("✅ Decoder created: {}Hz, {} channels", sample_rate, channels);
+    println!(
+        "✅ Decoder created: {}Hz, {} channels",
+        sample_rate, channels
+    );
 
     // 创建音频输出
     let (_stream, stream_handle) = OutputStream::try_default().unwrap();
@@ -413,9 +424,13 @@ async fn test_simplified_streaming(url: &str) {
         let complete = buf.complete;
         drop(buf);
 
-        print!("\r⏱️  {} sec | Buffer: {:.1} MB | Underruns: {} {}",
-               i + 1, mb_buffered, underruns,
-               if complete { "| ✅ Downloaded" } else { "" });
+        print!(
+            "\r⏱️  {} sec | Buffer: {:.1} MB | Underruns: {} {}",
+            i + 1,
+            mb_buffered,
+            underruns,
+            if complete { "| ✅ Downloaded" } else { "" }
+        );
 
         use std::io::{self, Write};
         io::stdout().flush().unwrap();

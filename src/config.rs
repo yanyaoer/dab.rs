@@ -120,7 +120,7 @@ impl Default for Config {
             cache_min_free_space_mb: 256, // Keep 256MB free space
             preload_next_tracks: 2,       // Preload next 2 tracks
             stream_url_expire_hours: 24,  // Stream URLs expire after 24 hours
-            streaming_buffer: 0,           // 0 = download complete before playback (recommended)
+            streaming_buffer: 0,          // 0 = download complete before playback (recommended)
             api: ApiConfig::default(),
         }
     }
@@ -235,11 +235,17 @@ impl Config {
                 "medium" => AudioQuality::Medium,
                 "high" => AudioQuality::High,
                 _ => {
-                    log::warn!("Invalid audio quality in env: {}. Using existing value.", val);
+                    log::warn!(
+                        "Invalid audio quality in env: {}. Using existing value.",
+                        val
+                    );
                     self.audio_quality.clone()
                 }
             };
-            if val.to_lowercase() == "low" || val.to_lowercase() == "medium" || val.to_lowercase() == "high" {
+            if val.to_lowercase() == "low"
+                || val.to_lowercase() == "medium"
+                || val.to_lowercase() == "high"
+            {
                 log::info!("Overriding audio_quality from env: {:?}", quality);
                 self.audio_quality = quality;
             }
@@ -252,7 +258,10 @@ impl Config {
                     log::info!("Overriding volume from env: {}", volume);
                     self.volume = volume;
                 } else {
-                    log::warn!("Invalid volume in env: {}. Must be between 0.0 and 1.0", volume);
+                    log::warn!(
+                        "Invalid volume in env: {}. Must be between 0.0 and 1.0",
+                        volume
+                    );
                 }
             }
         }
@@ -292,7 +301,10 @@ impl Config {
         // Check for API backend override
         if let Ok(val) = env::var("DAB_API_BACKEND") {
             if val.to_lowercase() != "squid" {
-                log::warn!("Invalid API backend in env: {}. Only 'squid' is supported.", val);
+                log::warn!(
+                    "Invalid API backend in env: {}. Only 'squid' is supported.",
+                    val
+                );
             }
             // Backend is always Squid now, no need to change
         }
@@ -320,7 +332,7 @@ impl Config {
     }
 
     fn config_path() -> PathBuf {
-        dirs::config_dir()
+        dirs::cache_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("dab")
             .join("config.toml")
@@ -330,8 +342,6 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use tempfile::TempDir;
 
     #[test]
     fn test_default_config() {
@@ -357,9 +367,9 @@ mod tests {
     #[test]
     fn test_api_config_custom_url() {
         let api_config = ApiConfig {
-            backend: BackendType::Tidal,
+            backend: BackendType::Squid,
             targets: vec![ApiTarget {
-                name: "custom-tidal".to_string(),
+                name: "custom-squid".to_string(),
                 base_url: "https://custom.api.server/v1".to_string(),
                 weight: 100,
                 requires_proxy: false,

@@ -381,7 +381,10 @@ impl AsyncDownloadManager {
 
         // In download-complete mode, we'll send StreamReady only after download completes
         if download_complete_before_play {
-            info!("Download-complete mode: Will signal stream ready after full download for track {}", track.id);
+            info!(
+                "Download-complete mode: Will signal stream ready after full download for track {}",
+                track.id
+            );
         }
 
         use futures_util::StreamExt;
@@ -399,7 +402,8 @@ impl AsyncDownloadManager {
             streaming_source.write_data(&chunk).await?;
 
             // Also collect for caching (always collect in download-complete mode)
-            if download_complete_before_play || true {  // Always cache for now
+            if download_complete_before_play || true {
+                // Always cache for now
                 temp_cache_data.extend_from_slice(&chunk);
             }
 
@@ -466,25 +470,28 @@ impl AsyncDownloadManager {
             let _ = event_tx.send(DownloadEvent::StreamReady {
                 track_id: track.id.clone(),
             });
-            info!("Download-complete mode: Track {} is now ready for playback ({} bytes downloaded)",
-                  track.id, downloaded);
+            info!(
+                "Download-complete mode: Track {} is now ready for playback ({} bytes downloaded)",
+                track.id, downloaded
+            );
         }
 
-        // Cache the complete file
+        // Cache the complete file with full API metadata
         if !temp_cache_data.is_empty() {
             let temp_file = tempfile::NamedTempFile::new()?;
             tokio::fs::write(temp_file.path(), &temp_cache_data).await?;
 
             let mut cache_lock = cache.write().await;
             if let Err(e) = cache_lock
-                .store_track_with_url(&track.id, temp_file.path(), stream_url)
+                .store_track_with_api_metadata(track, temp_file.path(), stream_url)
                 .await
             {
                 warn!("Failed to cache track {}: {}", track.id, e);
             } else {
                 info!(
-                    "Cached track: {} ({} bytes)",
-                    track.id,
+                    "Cached track with API metadata: {} by {} ({} bytes)",
+                    track.title,
+                    track.artist,
                     temp_cache_data.len()
                 );
             }
@@ -527,7 +534,11 @@ impl AsyncDownloadManager {
     }
 
     /// Calculate optimal buffer sizes based on track properties
-    fn calculate_optimal_buffer_sizes(track: &Track, lossless: bool, streaming_buffer: u32) -> (u32, u32) {
+    fn calculate_optimal_buffer_sizes(
+        track: &Track,
+        lossless: bool,
+        streaming_buffer: u32,
+    ) -> (u32, u32) {
         // If streaming_buffer is specified, use it as both min and max
         if streaming_buffer > 0 {
             let configured_buffer = streaming_buffer.min(512); // Cap at 512MB

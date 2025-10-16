@@ -65,7 +65,8 @@ impl Read for StreamBufferSource {
 
             if available > 0 {
                 let to_read = buf.len().min(available);
-                buf[..to_read].copy_from_slice(&buffer.data[buffer.read_pos..buffer.read_pos + to_read]);
+                buf[..to_read]
+                    .copy_from_slice(&buffer.data[buffer.read_pos..buffer.read_pos + to_read]);
                 buffer.read_pos += to_read;
                 return Ok(to_read);
             }
@@ -300,9 +301,11 @@ async fn test_symphonia_streaming(url: &str, min_buffer_kb: usize) {
         let buf = buffer.lock().unwrap();
         let kb_available = buf.bytes_available() / 1024;
         if kb_available >= min_buffer_kb {
-            println!("✅ Buffered {} KB in {:.1}s",
-                     kb_available,
-                     start_time.elapsed().as_secs_f32());
+            println!(
+                "✅ Buffered {} KB in {:.1}s",
+                kb_available,
+                start_time.elapsed().as_secs_f32()
+            );
             drop(buf);
             break;
         }
@@ -327,7 +330,8 @@ async fn test_symphonia_streaming(url: &str, min_buffer_kb: usize) {
     };
 
     let mut format = probed.format;
-    let track = format.tracks()
+    let track = format
+        .tracks()
         .iter()
         .find(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
         .expect("No supported audio tracks");
@@ -337,11 +341,16 @@ async fn test_symphonia_streaming(url: &str, min_buffer_kb: usize) {
         .expect("Failed to create decoder");
 
     let sample_rate = track.codec_params.sample_rate.unwrap_or(44100);
-    let channels = track.codec_params.channels
+    let channels = track
+        .codec_params
+        .channels
         .map(|ch| ch.count() as u16)
         .unwrap_or(2);
 
-    println!("✅ Decoder created: {}Hz, {} channels", sample_rate, channels);
+    println!(
+        "✅ Decoder created: {}Hz, {} channels",
+        sample_rate, channels
+    );
 
     // 创建音频输出
     let (_stream, stream_handle) = OutputStream::try_default().unwrap();
@@ -369,9 +378,13 @@ async fn test_symphonia_streaming(url: &str, min_buffer_kb: usize) {
         let complete = buf.complete;
         drop(buf);
 
-        print!("\r⏱️  {} sec | Buffer: {} KB | Underruns: {} {}",
-               i + 1, kb_buffered, underruns,
-               if complete { "| ✅ Downloaded" } else { "" });
+        print!(
+            "\r⏱️  {} sec | Buffer: {} KB | Underruns: {} {}",
+            i + 1,
+            kb_buffered,
+            underruns,
+            if complete { "| ✅ Downloaded" } else { "" }
+        );
 
         use std::io::{self, Write};
         io::stdout().flush().unwrap();
@@ -529,7 +542,14 @@ async fn get_stream_url() -> Result<String, Box<dyn std::error::Error>> {
     if trimmed.starts_with("http") {
         Ok(trimmed.to_string())
     } else {
-        Err(format!("Could not extract stream URL from response: {}",
-            if body.len() > 200 { &body[..200] } else { &body }).into())
+        Err(format!(
+            "Could not extract stream URL from response: {}",
+            if body.len() > 200 {
+                &body[..200]
+            } else {
+                &body
+            }
+        )
+        .into())
     }
 }

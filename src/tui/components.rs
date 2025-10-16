@@ -287,11 +287,15 @@ impl UnifiedList {
                         Style::default().fg(Color::Cyan),
                     ),
                     Span::styled(
-                        format!(" ({}, {} tracks)", release_year, album.track_count.unwrap_or(0)),
+                        format!(
+                            " ({}, {} tracks)",
+                            release_year,
+                            album.track_count.unwrap_or(0)
+                        ),
                         Style::default().fg(Color::DarkGray),
                     ),
                 ]))
-            },
+            }
             ListItemType::DabAlbum(album) => {
                 let release_year = album
                     .release_date
@@ -310,7 +314,11 @@ impl UnifiedList {
                         Style::default().fg(Color::Cyan),
                     ),
                     Span::styled(
-                        format!(" ({}, {} tracks)", release_year, album.track_count.unwrap_or(0)),
+                        format!(
+                            " ({}, {} tracks)",
+                            release_year,
+                            album.track_count.unwrap_or(0)
+                        ),
                         Style::default().fg(Color::DarkGray),
                     ),
                 ]))

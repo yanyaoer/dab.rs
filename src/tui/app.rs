@@ -150,7 +150,11 @@ impl TuiApp {
         network_client: AsyncNetworkClient,
     ) -> DabResult<Self> {
         let cache = Cache::new().await?;
-        let key_handler = KeyHandler::new();
+
+        // Create key handler with cache and library
+        let mut key_handler = KeyHandler::new();
+        key_handler.set_cache(cache.clone());
+        key_handler.set_library(library.clone());
 
         // Create async search channel
         let (search_tx, search_rx) = mpsc::unbounded_channel();

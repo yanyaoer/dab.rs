@@ -62,7 +62,8 @@ impl Read for StreamBufferReader {
 
             if available > 0 {
                 let to_read = buf.len().min(available);
-                buf[..to_read].copy_from_slice(&buffer.data[buffer.read_pos..buffer.read_pos + to_read]);
+                buf[..to_read]
+                    .copy_from_slice(&buffer.data[buffer.read_pos..buffer.read_pos + to_read]);
                 buffer.read_pos += to_read;
                 return Ok(to_read);
             }
@@ -128,9 +129,9 @@ async fn main() {
 
     match choice {
         "1" => test_download_complete(&stream_url).await,
-        "2" => test_simple_streaming(&stream_url, 1024 * 1024).await,     // 1MB
-        "3" => test_simple_streaming(&stream_url, 100 * 1024).await,      // 100KB
-        "4" => test_simple_streaming(&stream_url, 10 * 1024).await,       // 10KB
+        "2" => test_simple_streaming(&stream_url, 1024 * 1024).await, // 1MB
+        "3" => test_simple_streaming(&stream_url, 100 * 1024).await,  // 100KB
+        "4" => test_simple_streaming(&stream_url, 10 * 1024).await,   // 10KB
         _ => println!("Invalid choice"),
     }
 }
@@ -206,7 +207,10 @@ async fn test_simple_streaming(url: &str, min_buffer_bytes: usize) {
     });
 
     // 等待初始缓冲
-    println!("⏳ Buffering {} KB before starting playback...", min_buffer_bytes / 1024);
+    println!(
+        "⏳ Buffering {} KB before starting playback...",
+        min_buffer_bytes / 1024
+    );
     let start_time = Instant::now();
 
     loop {
@@ -214,9 +218,11 @@ async fn test_simple_streaming(url: &str, min_buffer_bytes: usize) {
         let bytes_buffered = buffer_lock.bytes_available();
 
         if bytes_buffered >= min_buffer_bytes || buffer_lock.complete {
-            println!("✅ Buffered {} KB in {:.1}s, starting playback",
-                     bytes_buffered / 1024,
-                     start_time.elapsed().as_secs_f32());
+            println!(
+                "✅ Buffered {} KB in {:.1}s, starting playback",
+                bytes_buffered / 1024,
+                start_time.elapsed().as_secs_f32()
+            );
             drop(buffer_lock);
             break;
         }
@@ -270,7 +276,10 @@ async fn test_simple_streaming(url: &str, min_buffer_bytes: usize) {
     sink.append(source);
 
     println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("🎵 PLAYING (After {} KB initial buffer)", min_buffer_bytes / 1024);
+    println!(
+        "🎵 PLAYING (After {} KB initial buffer)",
+        min_buffer_bytes / 1024
+    );
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!("Note: Due to rodio limitations, we had to");
     println!("download complete before playing, but we");

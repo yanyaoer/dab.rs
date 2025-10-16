@@ -11,18 +11,29 @@ use id3::TagLike;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Id3Metadata {
-    title: Option<String>,
-    artist: Option<String>,
-    album: Option<String>,
-    year: Option<u32>,
-    genre: Option<String>,
-    duration_ms: Option<u32>,
-    track_number: Option<u32>,
-    total_tracks: Option<u32>,
-    album_artist: Option<String>,
-    composer: Option<String>,
-    comment: Option<String>,
-    cover_art_hash: Option<String>,
+    // Standard ID3 fields
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub year: Option<u32>,
+    pub genre: Option<String>,
+    pub duration_ms: Option<u32>,
+    pub track_number: Option<u32>,
+    pub total_tracks: Option<u32>,
+    pub album_artist: Option<String>,
+    pub composer: Option<String>,
+    pub comment: Option<String>,
+    pub cover_art_hash: Option<String>,
+
+    // Extended fields from API (Tidal/Squid compatible)
+    pub artist_id: Option<String>,
+    pub album_id: Option<String>,
+    pub isrc: Option<String>, // International Standard Recording Code
+    pub audio_quality: Option<String>, // LOSSLESS, HI_RES, etc
+    pub cover_url: Option<String>,
+    pub release_date: Option<String>,
+    pub popularity: Option<u32>,
+    pub explicit: Option<bool>,
 }
 
 /// Cache status for tracks
@@ -144,9 +155,17 @@ impl Cache {
     }
 
     pub async fn get_track_path(&mut self, track_id: &str) -> DabResult<Option<PathBuf>> {
+        debug!("get_track_path called for track_id: {}", track_id);
+        debug!("Total entries in metadata: {}", self.metadata.entries.len());
+
         if let Some(entry) = self.metadata.entries.get_mut(track_id) {
             let path = PathBuf::from(&entry.file_path);
+            debug!("Found metadata entry for track {}, file_path: {}", track_id, entry.file_path);
+            debug!("Checking if path exists: {}", path.display());
+
             if path.exists() {
+                info!("✓ Cache hit for track {}: {}", track_id, path.display());
+
                 // Update access statistics
                 entry.last_accessed = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -169,7 +188,7 @@ impl Cache {
             } else {
                 // File was deleted, remove from metadata
                 warn!(
-                    "Cached file missing, removing from metadata: {}",
+                    "✗ Cached file missing (path.exists() = false), removing from metadata: {}",
                     path.display()
                 );
                 self.metadata.entries.remove(track_id);
@@ -177,12 +196,122 @@ impl Cache {
                 Ok(None)
             }
         } else {
+            debug!("✗ No metadata entry found for track_id: {}", track_id);
             Ok(None)
         }
     }
 
     pub async fn store_track(&mut self, track_id: &str, source_path: &Path) -> DabResult<PathBuf> {
         self.store_track_with_url(track_id, source_path, "").await
+    }
+
+    /// Store track with complete metadata from API (Tidal/Squid compatible)
+    pub async fn store_track_with_api_metadata(
+        &mut self,
+        track: &crate::player::Track,
+        source_path: &Path,
+        original_url: &str,
+    ) -> DabResult<PathBuf> {
+        let file_extension = source_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("mp3");
+
+        let cache_filename = format!("{}.{}", track.id, file_extension);
+        let cache_path = self.cache_dir.join(&cache_filename);
+
+        // Copy file to cache
+        fs::copy(source_path, &cache_path).await?;
+
+        let metadata = fs::metadata(&cache_path).await?;
+        let size_bytes = metadata.len();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Extract ID3 metadata from the file first
+        let mut id3_metadata = self.extract_id3_metadata(source_path).await.unwrap_or(None);
+
+        // Merge with API metadata from Track object
+        if let Some(ref mut metadata) = id3_metadata {
+            // Override/fill from Track data (API information takes priority)
+            metadata.title = Some(track.title.clone());
+            metadata.artist = Some(track.artist.clone());
+            metadata.album = Some(track.album.clone());
+            metadata.duration_ms = Some(track.duration_ms);
+            metadata.artist_id = track.artist_id.clone();
+            metadata.album_id = track.album_id.clone();
+            metadata.cover_url = track.cover_url.clone();
+        } else {
+            // No ID3 tags, create metadata from Track object
+            id3_metadata = Some(Id3Metadata {
+                // From Track
+                title: Some(track.title.clone()),
+                artist: Some(track.artist.clone()),
+                album: Some(track.album.clone()),
+                duration_ms: Some(track.duration_ms),
+                artist_id: track.artist_id.clone(),
+                album_id: track.album_id.clone(),
+                cover_url: track.cover_url.clone(),
+                // Defaults
+                year: None,
+                genre: None,
+                track_number: None,
+                total_tracks: None,
+                album_artist: None,
+                composer: None,
+                comment: None,
+                cover_art_hash: None,
+                isrc: None,
+                audio_quality: None,
+                release_date: None,
+                popularity: None,
+                explicit: None,
+            });
+        }
+
+        // Generate unique ID based on file content hash and metadata
+        let unique_id = self
+            .generate_unique_id(&track.id, &id3_metadata, original_url)
+            .await;
+
+        // Add to metadata
+        let entry = CacheEntry {
+            track_id: track.id.clone(),
+            file_path: cache_path.to_string_lossy().to_string(),
+            size_bytes,
+            created_at: now,
+            last_accessed: now,
+            url: original_url.to_string(),
+            id3_metadata,
+            unique_id,
+            download_status: CacheStatus::FullyDownloaded,
+            expected_size: Some(size_bytes),
+            // Initialize new fields
+            access_count: 1, // First access when storing
+            priority: CachePriority::Normal,
+            last_played: None,
+            expires_at: if original_url.starts_with("http") {
+                Some(now + (self.stream_url_expire_hours as u64 * 3600))
+            } else {
+                None // Local files don't expire
+            },
+        };
+
+        self.metadata.entries.insert(track.id.clone(), entry);
+
+        // Check if we need to clean up old files
+        self.enforce_size_limit().await?;
+
+        // Save metadata
+        self.save_metadata().await?;
+
+        info!(
+            "Stored track with API metadata: {} by {} ({} bytes)",
+            track.title, track.artist, size_bytes
+        );
+        Ok(cache_path)
     }
 
     pub async fn store_track_with_url(
@@ -418,7 +547,7 @@ impl Cache {
 
     async fn cleanup(&self) -> DabResult<()> {
         // Remove any audio files in cache directory that aren't in metadata
-        // Preserve system files like metadata.json and favorite_albums.json
+        // Preserve system files like metadata.json, favorite_albums.json, and config.toml
         let mut entries = fs::read_dir(&self.cache_dir).await?;
 
         while let Some(entry) = entries.next_entry().await? {
@@ -426,7 +555,10 @@ impl Cache {
 
             // Skip system files that should never be cleaned up
             if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
-                if filename == "metadata.json" || filename == "favorite_albums.json" {
+                if filename == "metadata.json"
+                    || filename == "favorite_albums.json"
+                    || filename == "config.toml"
+                {
                     continue;
                 }
             }
@@ -668,6 +800,7 @@ impl Cache {
         match id3::Tag::read_from_path(file_path) {
             Ok(tag) => {
                 let metadata = Id3Metadata {
+                    // Standard ID3 fields
                     title: tag.title().map(|s| s.to_string()),
                     artist: tag.artist().map(|s| s.to_string()),
                     album: tag.album().map(|s| s.to_string()),
@@ -680,6 +813,15 @@ impl Cache {
                     composer: None, // Composer field not available in id3::Tag
                     comment: tag.comments().next().map(|c| c.text.to_string()),
                     cover_art_hash: None, // TODO: Extract and hash cover art
+                    // Extended fields - will be None from ID3, should be filled from API
+                    artist_id: None,
+                    album_id: None,
+                    isrc: None,
+                    audio_quality: None,
+                    cover_url: None,
+                    release_date: None,
+                    popularity: None,
+                    explicit: None,
                 };
                 Ok(Some(metadata))
             }

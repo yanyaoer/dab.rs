@@ -3,8 +3,10 @@ use reqwest::{Client, Url};
 use serde::Deserialize;
 use std::time::Duration;
 
+use crate::cache::Cache;
 use crate::config::{ApiTarget, AudioQuality, Config};
 use crate::error::{DabError, DabResult};
+use crate::library::Library;
 use crate::search::{DabAlbum, DabArtist, DabTrack, SearchResult};
 
 /// Search request parameters
@@ -55,6 +57,8 @@ impl From<&str> for SearchType {
 pub struct MusicProviderClient {
     client: Client,
     config: Config,
+    cache: Option<Cache>,
+    library: Option<Library>,
 }
 
 impl MusicProviderClient {
@@ -65,7 +69,12 @@ impl MusicProviderClient {
             .build()
             .unwrap_or_else(|_| Client::new());
 
-        Self { client, config }
+        Self {
+            client,
+            config,
+            cache: None,
+            library: None,
+        }
     }
 
     pub fn new_with_config(config: Config) -> Self {
@@ -74,7 +83,43 @@ impl MusicProviderClient {
             .build()
             .unwrap_or_else(|_| Client::new());
 
-        Self { client, config }
+        Self {
+            client,
+            config,
+            cache: None,
+            library: None,
+        }
+    }
+
+    pub async fn new_with_cache_and_library(config: Config) -> DabResult<Self> {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(config.api.timeout_seconds))
+            .build()
+            .unwrap_or_else(|_| Client::new());
+
+        let cache = Cache::new().await.ok();
+        let library = if let Some(ref cache) = cache {
+            Library::new(cache.clone()).await.ok()
+        } else {
+            None
+        };
+
+        Ok(Self {
+            client,
+            config,
+            cache,
+            library,
+        })
+    }
+
+    /// Set cache reference (useful when cache is created after provider)
+    pub fn set_cache(&mut self, cache: Cache) {
+        self.cache = Some(cache);
+    }
+
+    /// Set library reference (useful when library is created after provider)
+    pub fn set_library(&mut self, library: Library) {
+        self.library = Some(library);
     }
 
     /// Perform a GET request with fallback and return raw response text
@@ -121,8 +166,8 @@ impl MusicProviderClient {
                                     return Ok(body);
                                 } else {
                                     error!(
-                                        "{} returned empty body from target '{}'",
-                                        operation, target.name
+                                        "{} returned empty body from target '{}' - URL: {}",
+                                        operation, target.name, url
                                     );
                                     last_error =
                                         Some(DabError::Network("Empty response body".to_string()));
@@ -130,18 +175,19 @@ impl MusicProviderClient {
                             }
                             Err(e) => {
                                 error!(
-                                    "{} read error with target '{}': {}",
-                                    operation, target.name, e
+                                    "{} read error with target '{}': {} - URL: {}",
+                                    operation, target.name, e, url
                                 );
                                 last_error = Some(DabError::Network(format!("Read error: {}", e)));
                             }
                         }
                     } else {
                         error!(
-                            "{} HTTP error with target '{}': {}",
+                            "{} HTTP error with target '{}': {} - URL: {}",
                             operation,
                             target.name,
-                            response.status()
+                            response.status(),
+                            url
                         );
                         last_error = Some(DabError::Network(format!(
                             "HTTP error: {}",
@@ -151,8 +197,8 @@ impl MusicProviderClient {
                 }
                 Err(e) => {
                     error!(
-                        "{} network error with target '{}': {}",
-                        operation, target.name, e
+                        "{} network error with target '{}': {} - URL: {}",
+                        operation, target.name, e, url
                     );
                     last_error = Some(DabError::Network(format!("Network error: {}", e)));
                 }
@@ -209,18 +255,19 @@ impl MusicProviderClient {
                             }
                             Err(e) => {
                                 error!(
-                                    "{} parse error with target '{}': {}",
-                                    operation, target.name, e
+                                    "{} parse error with target '{}': {} - URL: {}",
+                                    operation, target.name, e, url
                                 );
                                 last_error = Some(DabError::Network(format!("Parse error: {}", e)));
                             }
                         }
                     } else {
                         error!(
-                            "{} HTTP error with target '{}': {}",
+                            "{} HTTP error with target '{}': {} - URL: {}",
                             operation,
                             target.name,
-                            response.status()
+                            response.status(),
+                            url
                         );
                         last_error = Some(DabError::Network(format!(
                             "HTTP error: {}",
@@ -230,8 +277,8 @@ impl MusicProviderClient {
                 }
                 Err(e) => {
                     error!(
-                        "{} network error with target '{}': {}",
-                        operation, target.name, e
+                        "{} network error with target '{}': {} - URL: {}",
+                        operation, target.name, e, url
                     );
                     last_error = Some(DabError::Network(format!("Network error: {}", e)));
                 }
@@ -438,9 +485,10 @@ impl MusicProviderClient {
                 artist: artist_name,
                 artist_id,
                 album_title: t.album.as_ref().map(|a| a.title.clone()),
-                album_cover: t.album.as_ref().and_then(|a| {
-                    a.cover.as_ref().map(|c| format_cover_url(c))
-                }),
+                album_cover: t
+                    .album
+                    .as_ref()
+                    .and_then(|a| a.cover.as_ref().map(|c| format_cover_url(c))),
                 album_id: t.album.map(|a| a.id.to_string()),
                 release_date: None,
                 genre: None,
@@ -521,11 +569,8 @@ impl MusicProviderClient {
         match response {
             SquidSearchResponse::DirectTrackList(track_list) => {
                 // Handle direct track list response (from ?s= search)
-                let tracks: Vec<DabTrack> = track_list
-                    .items
-                    .into_iter()
-                    .map(convert_track)
-                    .collect();
+                let tracks: Vec<DabTrack> =
+                    track_list.items.into_iter().map(convert_track).collect();
                 search_result.tracks = Some(tracks);
             }
             SquidSearchResponse::ArrayResponse(array) => {
@@ -555,11 +600,8 @@ impl MusicProviderClient {
             SquidSearchResponse::NestedResponse(nested) => {
                 // Handle nested response (from ?al= album search)
                 if let Some(squid_tracks) = nested.tracks {
-                    let tracks: Vec<DabTrack> = squid_tracks
-                        .items
-                        .into_iter()
-                        .map(convert_track)
-                        .collect();
+                    let tracks: Vec<DabTrack> =
+                        squid_tracks.items.into_iter().map(convert_track).collect();
                     search_result.tracks = Some(tracks);
                 }
 
@@ -635,6 +677,45 @@ impl MusicProviderClient {
 
     /// Get stream URL for a track
     pub async fn get_stream_url(&self, track_id: &str) -> DabResult<String> {
+        debug!("get_stream_url called for track_id: {}", track_id);
+
+        // First, check if we have this track cached locally
+        if let Some(ref cache) = self.cache {
+            debug!("Cache is available, cloning and checking for track {}", track_id);
+
+            // Clone cache to avoid borrowing issues
+            let mut cache_clone = cache.clone();
+            debug!("Cache cloned, calling get_track_path for track {}", track_id);
+
+            match cache_clone.get_track_path(track_id).await {
+                Ok(Some(cached_path)) => {
+                    let file_url = format!("file://{}", cached_path.display());
+                    info!("✓ Using cached file for track {}: {}", track_id, file_url);
+                    return Ok(file_url);
+                }
+                Ok(None) => {
+                    debug!("get_track_path returned None for track {}", track_id);
+                }
+                Err(e) => {
+                    debug!("get_track_path error for track {}: {:?}", track_id, e);
+                }
+            }
+
+            // Check if we have a cached stream URL that's still valid
+            if let Some(cached_url) = cache.get_cached_url(track_id).await? {
+                info!("Found cached URL for track {}, using it", track_id);
+                return Ok(cached_url);
+            } else {
+                debug!("get_cached_url returned None for track {}", track_id);
+            }
+        } else {
+            debug!("Cache is None, cannot check for cached track");
+        }
+
+        info!(
+            "Track {} not found in cache, fetching stream URL from API",
+            track_id
+        );
         #[derive(Deserialize)]
         struct StreamResponse {
             url: String,
@@ -689,6 +770,142 @@ impl MusicProviderClient {
 
     /// Get album information
     pub async fn get_album_info(&self, album_id: &str) -> DabResult<DabAlbum> {
+        // First, check if we have this album in favorites
+        if let Some(ref library) = self.library {
+            let favorite_albums = library.get_favorite_albums();
+            if let Some(fav_album) = favorite_albums.iter().find(|a| a.id == album_id) {
+                info!("Found album {} in favorites cache", album_id);
+                return Ok(DabAlbum {
+                    id: fav_album.id.clone(),
+                    title: fav_album.title.clone(),
+                    artist: fav_album.artist.clone(),
+                    artist_id: fav_album.artist_id.clone(),
+                    release_date: fav_album.release_date.clone(),
+                    genre: None,
+                    cover: fav_album.cover.clone(),
+                    tracks: None, // Will be populated from cache if available
+                    track_count: fav_album.track_count,
+                    duration: None,
+                    label: None,
+                    upc: None,
+                    url: None,
+                    streamable: Some(true),
+                    downloadable: None,
+                    media_count: None,
+                    maximum_channel_count: None,
+                    parental_warning: None,
+                    popularity: None,
+                    audio_quality: None,
+                });
+            }
+        }
+
+        // Check if we have cached tracks for this album_id
+        if let Some(ref cache) = self.cache {
+            // Try to find tracks with matching album_id in their metadata
+            if let Ok(cached_files) = cache.get_all_cached_files().await {
+                let mut album_tracks = Vec::new();
+                let mut album_title = None;
+                let mut album_artist = None;
+                let mut album_cover = None;
+
+                for (track_id, _path) in cached_files {
+                    if let Ok(Some(metadata)) = cache.get_track_metadata(&track_id).await {
+                        // Check if this track belongs to the album_id we're looking for
+                        if metadata.album_id.as_deref() == Some(album_id) {
+                            // This track belongs to our album
+                            if album_title.is_none() {
+                                album_title = metadata.album.clone();
+                            }
+                            if album_artist.is_none() {
+                                album_artist = metadata.album_artist.clone().or_else(|| metadata.artist.clone());
+                            }
+                            if album_cover.is_none() {
+                                album_cover = metadata.cover_url.clone();
+                            }
+
+                            // Add track to list
+                            album_tracks.push(DabTrack {
+                                id: track_id.clone(),
+                                title: metadata.title.unwrap_or_else(|| "Unknown".to_string()),
+                                artist: metadata.artist.unwrap_or_default(),
+                                artist_id: metadata.artist_id.clone(),
+                                album_title: metadata.album.clone(),
+                                album_cover: metadata.cover_url.clone(),
+                                album_id: Some(album_id.to_string()),
+                                release_date: metadata.release_date.clone(),
+                                genre: metadata.genre.clone(),
+                                duration: metadata.duration_ms,
+                                audio_quality: None, // ID3 audio_quality is String, DabTrack expects enum
+                                version: None,
+                                label: None,
+                                label_id: None,
+                                upc: None,
+                                media_count: None,
+                                parental_warning: None,
+                                streamable: Some(true),
+                                purchasable: None,
+                                previewable: None,
+                                genre_id: None,
+                                genre_slug: None,
+                                genre_color: None,
+                                release_date_stream: None,
+                                release_date_download: None,
+                                maximum_channel_count: None,
+                                images: None,
+                                isrc: metadata.isrc.clone(),
+                            });
+                        }
+                    }
+                }
+
+                // If we found cached tracks for this album, return album info from cache
+                if !album_tracks.is_empty() {
+                    info!(
+                        "Found {} cached tracks for album {}",
+                        album_tracks.len(),
+                        album_id
+                    );
+
+                    // Sort tracks by track number
+                    album_tracks.sort_by(|a, b| {
+                        // Try to parse track IDs as numbers for sorting
+                        let a_num = a.id.parse::<u64>().unwrap_or(0);
+                        let b_num = b.id.parse::<u64>().unwrap_or(0);
+                        a_num.cmp(&b_num)
+                    });
+
+                    return Ok(DabAlbum {
+                        id: album_id.to_string(),
+                        title: album_title.unwrap_or_else(|| "Unknown Album".to_string()),
+                        artist: album_artist.unwrap_or_default(),
+                        artist_id: album_tracks.first().and_then(|t| t.artist_id.clone()),
+                        release_date: album_tracks.first().and_then(|t| t.release_date.clone()),
+                        genre: album_tracks.first().and_then(|t| t.genre.clone()),
+                        cover: album_cover,
+                        tracks: Some(album_tracks.clone()),
+                        track_count: Some(album_tracks.len() as u32),
+                        duration: Some(album_tracks.iter().filter_map(|t| t.duration).sum()),
+                        label: None,
+                        upc: None,
+                        url: None,
+                        streamable: Some(true),
+                        downloadable: None,
+                        media_count: None,
+                        maximum_channel_count: None,
+                        parental_warning: None,
+                        popularity: None,
+                        audio_quality: None, // Will be None from cached tracks
+                    });
+                }
+            }
+        }
+
+        // If not found in local cache, fetch from API
+        info!(
+            "Album {} not found in local cache, fetching from API",
+            album_id
+        );
         // Reuse common structures
         #[derive(Deserialize)]
         struct SquidAlbumInfo {
@@ -708,6 +925,12 @@ impl MusicProviderClient {
         struct SquidAlbumArtist {
             id: i64,
             name: String,
+            #[serde(default)]
+            handle: Option<String>,
+            #[serde(rename = "type", default)]
+            artist_type: Option<String>,
+            #[serde(default)]
+            picture: Option<String>,
         }
 
         #[derive(Deserialize)]
@@ -779,43 +1002,50 @@ impl MusicProviderClient {
         // Parse tracks if available
         let mut tracks = None;
         if arr.len() > 1 {
-            if let Ok(track_list) = serde_json::from_value::<SquidTrackList>(arr[1].clone()) {
-                tracks = Some(
-                    track_list
-                        .items
-                        .into_iter()
-                        .map(|item| DabTrack {
-                            id: item.item.id.to_string(),
-                            title: item.item.title,
-                            artist: album_artist_name.clone(),
-                            artist_id: album_artist_id.clone(),
-                            album_title: Some(album_info.title.clone()),
-                            album_cover: album_info.cover.as_ref().map(|c| format_cover_url(c)),
-                            album_id: Some(album_id.to_string()),
-                            release_date: None,
-                            genre: None,
-                            duration: item.item.duration,
-                            audio_quality: None,
-                            version: None,
-                            label: None,
-                            label_id: None,
-                            upc: None,
-                            media_count: None,
-                            parental_warning: None,
-                            streamable: Some(true),
-                            purchasable: None,
-                            previewable: None,
-                            genre_id: None,
-                            genre_slug: None,
-                            genre_color: None,
-                            release_date_stream: None,
-                            release_date_download: None,
-                            maximum_channel_count: None,
-                            images: None,
-                            isrc: None,
-                        })
-                        .collect(),
-                );
+            // Check if the second element is an error response
+            if arr[1].get("status").is_some() {
+                // This is an error response, skip track parsing
+                debug!("Track list unavailable - API returned error status");
+            } else {
+                // Try to parse as track list
+                if let Ok(track_list) = serde_json::from_value::<SquidTrackList>(arr[1].clone()) {
+                    tracks = Some(
+                        track_list
+                            .items
+                            .into_iter()
+                            .map(|item| DabTrack {
+                                id: item.item.id.to_string(),
+                                title: item.item.title,
+                                artist: album_artist_name.clone(),
+                                artist_id: album_artist_id.clone(),
+                                album_title: Some(album_info.title.clone()),
+                                album_cover: album_info.cover.as_ref().map(|c| format_cover_url(c)),
+                                album_id: Some(album_id.to_string()),
+                                release_date: None,
+                                genre: None,
+                                duration: item.item.duration,
+                                audio_quality: None,
+                                version: None,
+                                label: None,
+                                label_id: None,
+                                upc: None,
+                                media_count: None,
+                                parental_warning: None,
+                                streamable: Some(true),
+                                purchasable: None,
+                                previewable: None,
+                                genre_id: None,
+                                genre_slug: None,
+                                genre_color: None,
+                                release_date_stream: None,
+                                release_date_download: None,
+                                maximum_channel_count: None,
+                                images: None,
+                                isrc: None,
+                            })
+                            .collect(),
+                    );
+                }
             }
         }
 
@@ -844,52 +1074,80 @@ impl MusicProviderClient {
     }
 
     /// Get artist discography
+    /// Now uses /artist/?f= endpoint instead of /discography/?artistId=
     pub async fn get_artist_discography(
         &self,
         artist_id: &str,
     ) -> DabResult<(DabArtist, Vec<DabAlbum>)> {
-        // New API structure for artist discography
+        // Use get_artist_albums to fetch albums via /artist/?f= endpoint
+        let albums = self.get_artist_albums(artist_id).await?;
+
+        // Create a basic DabArtist from the artist_id
+        // Note: We don't have full artist details from /artist/?f= endpoint
+        // This is a simplified version that provides basic artist info
+        let artist = DabArtist {
+            id: artist_id.to_string(),
+            name: albums
+                .first()
+                .map(|a| a.artist.clone())
+                .unwrap_or_else(|| "Unknown Artist".to_string()),
+            albums_count: Some(albums.len() as u32),
+            albums_as_primary_artist_count: Some(albums.len() as u32),
+            albums_as_primary_composer_count: None,
+            slug: None,
+            image: None,
+            biography: None,
+            similar_artist_ids: None,
+            information: None,
+        };
+
+        Ok((artist, albums))
+    }
+
+    /// Get artist albums using the /artist/?f= endpoint
+    /// This endpoint returns a paginated list of albums for the artist
+    pub async fn get_artist_albums(&self, artist_id: &str) -> DabResult<Vec<DabAlbum>> {
+        // Response structure for /artist/?f= endpoint
         #[derive(Deserialize)]
-        struct ArtistResponse {
-            rows: Vec<Row>,
+        struct ArtistPageResponse {
+            rows: Vec<ArtistPageRow>,
         }
 
         #[derive(Deserialize)]
-        struct Row {
-            modules: Vec<Module>,
+        struct ArtistPageRow {
+            modules: Vec<ArtistPageModule>,
         }
 
         #[derive(Deserialize)]
-        struct Module {
+        struct ArtistPageModule {
             #[serde(rename = "pagedList")]
-            paged_list: PagedList,
+            paged_list: Option<PagedAlbumList>,
         }
 
         #[derive(Deserialize)]
-        struct PagedList {
-            items: Vec<AlbumItem>,
-            #[serde(rename = "totalNumberOfItems")]
-            total_number_of_items: Option<u32>,
+        struct PagedAlbumList {
+            items: Vec<TidalAlbum>,
         }
 
         #[derive(Deserialize)]
-        struct AlbumItem {
+        struct TidalAlbum {
             id: i64,
             title: String,
             cover: Option<String>,
+            artists: Option<Vec<TidalArtist>>,
             #[serde(rename = "numberOfTracks")]
             number_of_tracks: Option<u32>,
             #[serde(rename = "releaseDate")]
             release_date: Option<String>,
             duration: Option<u32>,
-            artists: Vec<ArtistInfo>,
+            #[serde(rename = "allowStreaming")]
+            allow_streaming: Option<bool>,
         }
 
         #[derive(Deserialize)]
-        struct ArtistInfo {
+        struct TidalArtist {
             id: i64,
             name: String,
-            picture: Option<String>,
         }
 
         // Helper function to format cover URLs
@@ -904,176 +1162,73 @@ impl MusicProviderClient {
             }
         }
 
-        // Helper function to format artist picture URLs
-        fn format_artist_picture(picture: &str) -> crate::search::ArtistImage {
-            let url = if picture.starts_with("http") {
-                picture.to_string()
-            } else {
-                format!(
-                    "https://resources.tidal.com/images/{}/750x750.jpg",
-                    picture.replace('-', "/")
-                )
-            };
-            crate::search::ArtistImage {
-                small: Some(url.clone()),
-                medium: Some(url.clone()),
-                large: Some(url.clone()),
-                extralarge: Some(url.clone()),
-                mega: Some(url),
-            }
-        }
-
-        // Fetch artist data using the new endpoint
-        let response: Vec<ArtistResponse> = self
-            .fetch_with_fallback("Artist Discography", |target| {
+        // Fetch artist albums using the /artist/?f= endpoint
+        let response: serde_json::Value = self
+            .fetch_with_fallback("Artist Albums", |target| {
                 format!("{}/artist/?f={}", target.base_url, artist_id)
             })
             .await?;
 
-        // Extract albums from the response structure
-        let albums = if let Some(first_response) = response.first() {
-            if let Some(first_row) = first_response.rows.first() {
-                if let Some(first_module) = first_row.modules.first() {
-                    first_module
-                        .paged_list
-                        .items
-                        .iter()
-                        .map(|album| {
-                            // Extract artist info from the album's artists array
-                            let (artist_name, artist_id_str) = if let Some(first_artist) = album.artists.first() {
-                                (first_artist.name.clone(), Some(first_artist.id.to_string()))
+        // The response is an array with one element containing the page structure
+        let response_array = response
+            .as_array()
+            .ok_or_else(|| DabError::Decode("Invalid artist albums response format".to_string()))?;
+
+        if response_array.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Parse the first element as ArtistPageResponse
+        let page_response: ArtistPageResponse = serde_json::from_value(response_array[0].clone())
+            .map_err(|e| DabError::Serialization(e))?;
+
+        // Extract albums from the page structure
+        let mut all_albums = Vec::new();
+        for row in page_response.rows {
+            for module in row.modules {
+                if let Some(paged_list) = module.paged_list {
+                    for tidal_album in paged_list.items {
+                        // Extract artist info from the artists array
+                        let (album_artist_name, album_artist_id) =
+                            if let Some(artists) = &tidal_album.artists {
+                                if let Some(first_artist) = artists.first() {
+                                    (first_artist.name.clone(), Some(first_artist.id.to_string()))
+                                } else {
+                                    (String::new(), Some(artist_id.to_string()))
+                                }
                             } else {
-                                (String::new(), None)
+                                (String::new(), Some(artist_id.to_string()))
                             };
 
-                            DabAlbum {
-                                id: album.id.to_string(),
-                                title: album.title.clone(),
-                                artist: artist_name,
-                                artist_id: artist_id_str,
-                                release_date: album.release_date.clone(),
-                                genre: None,
-                                cover: album.cover.as_ref().map(|c| format_cover_url(c)),
-                                tracks: None,
-                                track_count: album.number_of_tracks,
-                                duration: album.duration,
-                                label: None,
-                                upc: None,
-                                url: None,
-                                streamable: Some(true),
-                                downloadable: None,
-                                media_count: None,
-                                maximum_channel_count: None,
-                                parental_warning: None,
-                                popularity: None,
-                                audio_quality: None,
-                            }
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                }
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        };
+                        let album = DabAlbum {
+                            id: tidal_album.id.to_string(),
+                            title: tidal_album.title,
+                            artist: album_artist_name,
+                            artist_id: album_artist_id,
+                            release_date: tidal_album.release_date,
+                            genre: None,
+                            cover: tidal_album.cover.map(|c| format_cover_url(&c)),
+                            tracks: None,
+                            track_count: tidal_album.number_of_tracks,
+                            duration: tidal_album.duration,
+                            label: None,
+                            upc: None,
+                            url: None,
+                            streamable: tidal_album.allow_streaming,
+                            downloadable: None,
+                            media_count: None,
+                            maximum_channel_count: None,
+                            parental_warning: None,
+                            popularity: None,
+                            audio_quality: None,
+                        };
 
-        // Create artist info from the albums data (the new API doesn't return artist info separately)
-        let artist = if let Some(first_response) = response.first() {
-            if let Some(first_row) = first_response.rows.first() {
-                if let Some(first_module) = first_row.modules.first() {
-                    if let Some(first_album) = first_module.paged_list.items.first() {
-                        if let Some(first_artist) = first_album.artists.first() {
-                            DabArtist {
-                                id: artist_id.to_string(),
-                                name: first_artist.name.clone(),
-                                albums_count: first_module.paged_list.total_number_of_items,
-                                albums_as_primary_artist_count: None,
-                                albums_as_primary_composer_count: None,
-                                slug: None,
-                                image: first_artist.picture.as_ref().map(|pic| format_artist_picture(pic)),
-                                biography: None,
-                                similar_artist_ids: None,
-                                information: None,
-                            }
-                        } else {
-                            // No artist info in album, create a basic one
-                            DabArtist {
-                                id: artist_id.to_string(),
-                                name: format!("Artist {}", artist_id),
-                                albums_count: Some(albums.len() as u32),
-                                albums_as_primary_artist_count: None,
-                                albums_as_primary_composer_count: None,
-                                slug: None,
-                                image: None,
-                                biography: None,
-                                similar_artist_ids: None,
-                                information: None,
-                            }
-                        }
-                    } else {
-                        // No albums found, create minimal artist info
-                        DabArtist {
-                            id: artist_id.to_string(),
-                            name: format!("Artist {}", artist_id),
-                            albums_count: Some(0),
-                            albums_as_primary_artist_count: None,
-                            albums_as_primary_composer_count: None,
-                            slug: None,
-                            image: None,
-                            biography: None,
-                            similar_artist_ids: None,
-                            information: None,
-                        }
-                    }
-                } else {
-                    // No module data
-                    DabArtist {
-                        id: artist_id.to_string(),
-                        name: format!("Artist {}", artist_id),
-                        albums_count: Some(0),
-                        albums_as_primary_artist_count: None,
-                        albums_as_primary_composer_count: None,
-                        slug: None,
-                        image: None,
-                        biography: None,
-                        similar_artist_ids: None,
-                        information: None,
+                        all_albums.push(album);
                     }
                 }
-            } else {
-                // No rows data
-                DabArtist {
-                    id: artist_id.to_string(),
-                    name: format!("Artist {}", artist_id),
-                    albums_count: Some(0),
-                    albums_as_primary_artist_count: None,
-                    albums_as_primary_composer_count: None,
-                    slug: None,
-                    image: None,
-                    biography: None,
-                    similar_artist_ids: None,
-                    information: None,
-                }
             }
-        } else {
-            // Empty response
-            DabArtist {
-                id: artist_id.to_string(),
-                name: format!("Artist {}", artist_id),
-                albums_count: Some(0),
-                albums_as_primary_artist_count: None,
-                albums_as_primary_composer_count: None,
-                slug: None,
-                image: None,
-                biography: None,
-                similar_artist_ids: None,
-                information: None,
-            }
-        };
+        }
 
-        Ok((artist, albums))
+        Ok(all_albums)
     }
 }

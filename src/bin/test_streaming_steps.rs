@@ -51,7 +51,8 @@ impl Read for Arc<Mutex<SimpleStreamBuffer>> {
 
             if available > 0 {
                 let to_read = buf.len().min(available);
-                buf[..to_read].copy_from_slice(&buffer.data[buffer.read_pos..buffer.read_pos + to_read]);
+                buf[..to_read]
+                    .copy_from_slice(&buffer.data[buffer.read_pos..buffer.read_pos + to_read]);
                 buffer.read_pos += to_read;
                 return Ok(to_read);
             }
@@ -105,8 +106,8 @@ async fn main() {
     let choice = input.trim();
 
     match choice {
-        "1" => test_simple_streaming(&stream_url, 1024 * 1024).await,  // 1MB buffer
-        "2" => test_simple_streaming(&stream_url, 100 * 1024).await,    // 100KB buffer
+        "1" => test_simple_streaming(&stream_url, 1024 * 1024).await, // 1MB buffer
+        "2" => test_simple_streaming(&stream_url, 100 * 1024).await,  // 100KB buffer
         "3" => test_dab_like_streaming(&stream_url).await,
         _ => println!("Invalid choice"),
     }
@@ -114,7 +115,10 @@ async fn main() {
 
 async fn test_simple_streaming(url: &str, min_buffer_bytes: usize) {
     println!("\n🎵 Simple Streaming Test");
-    println!("Min buffer before playback: {} KB\n", min_buffer_bytes / 1024);
+    println!(
+        "Min buffer before playback: {} KB\n",
+        min_buffer_bytes / 1024
+    );
 
     // 创建缓冲区（50MB容量）
     let buffer = SimpleStreamBuffer::new(50 * 1024 * 1024);
@@ -127,7 +131,10 @@ async fn test_simple_streaming(url: &str, min_buffer_bytes: usize) {
     });
 
     // 等待初始缓冲
-    println!("⏳ Buffering {} KB before starting playback...", min_buffer_bytes / 1024);
+    println!(
+        "⏳ Buffering {} KB before starting playback...",
+        min_buffer_bytes / 1024
+    );
     let start_time = Instant::now();
 
     loop {
@@ -135,9 +142,11 @@ async fn test_simple_streaming(url: &str, min_buffer_bytes: usize) {
         let bytes_buffered = buffer_lock.bytes_available();
 
         if bytes_buffered >= min_buffer_bytes || buffer_lock.complete {
-            println!("✅ Buffered {} KB in {:.1}s, starting playback",
-                     bytes_buffered / 1024,
-                     start_time.elapsed().as_secs_f32());
+            println!(
+                "✅ Buffered {} KB in {:.1}s, starting playback",
+                bytes_buffered / 1024,
+                start_time.elapsed().as_secs_f32()
+            );
             drop(buffer_lock);
             break;
         }
@@ -184,10 +193,16 @@ async fn test_simple_streaming(url: &str, min_buffer_bytes: usize) {
         let is_complete = buffer_lock.complete;
         drop(buffer_lock);
 
-        print!("\r⏱️  {} seconds | Buffer: {} KB {}",
-               i + 1,
-               bytes_buffered / 1024,
-               if is_complete { "(download complete)" } else { "" });
+        print!(
+            "\r⏱️  {} seconds | Buffer: {} KB {}",
+            i + 1,
+            bytes_buffered / 1024,
+            if is_complete {
+                "(download complete)"
+            } else {
+                ""
+            }
+        );
 
         use std::io::{self};
         io::stdout().flush().unwrap();
@@ -264,10 +279,12 @@ async fn test_dab_like_streaming(url: &str) {
         let underruns = buffer_info.underrun_count;
         drop(buffer_info);
 
-        print!("\r⏱️  {} seconds | Buffer: {} KB | Underruns: {}",
-               i + 1,
-               bytes_buffered / 1024,
-               underruns);
+        print!(
+            "\r⏱️  {} seconds | Buffer: {} KB | Underruns: {}",
+            i + 1,
+            bytes_buffered / 1024,
+            underruns
+        );
 
         use std::io::{self};
         io::stdout().flush().unwrap();
@@ -379,7 +396,10 @@ async fn download_to_simple_buffer(url: &str, buffer: Arc<Mutex<SimpleStreamBuff
     let response = client.get(url).send().await.unwrap();
     let content_length = response.content_length().unwrap_or(0);
 
-    println!("📥 Downloading {} MB in background...", content_length / (1024 * 1024));
+    println!(
+        "📥 Downloading {} MB in background...",
+        content_length / (1024 * 1024)
+    );
 
     let mut stream = response.bytes_stream();
     let mut downloaded = 0u64;
@@ -413,7 +433,10 @@ async fn download_to_circular_buffer(url: &str, buffer: Arc<Mutex<CircularStream
     let response = client.get(url).send().await.unwrap();
     let content_length = response.content_length().unwrap_or(0);
 
-    println!("📥 Downloading {} MB with circular buffer...", content_length / (1024 * 1024));
+    println!(
+        "📥 Downloading {} MB with circular buffer...",
+        content_length / (1024 * 1024)
+    );
 
     let mut stream = response.bytes_stream();
     let mut downloaded = 0u64;

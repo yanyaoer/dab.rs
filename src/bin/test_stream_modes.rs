@@ -48,7 +48,8 @@ impl Read for Arc<Mutex<StreamBuffer>> {
             buffer = self.lock().unwrap();
 
             retries += 1;
-            if retries > 500 { // 5秒超时
+            if retries > 500 {
+                // 5秒超时
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::WouldBlock,
                     "Timeout waiting for data",
@@ -124,7 +125,8 @@ async fn get_stream_url() -> Result<String, Box<dyn std::error::Error>> {
         return Err(format!("API error: {}", error).into());
     }
 
-    stream_response.original_track_url
+    stream_response
+        .original_track_url
         .ok_or_else(|| "No stream URL in response".into())
 }
 
@@ -244,7 +246,8 @@ async fn download_to_buffer(url: &str, buffer: Arc<Mutex<StreamBuffer>>) {
 
             downloaded += chunk.len() as u64;
 
-            if downloaded % (1024 * 1024) == 0 { // 每MB打印一次
+            if downloaded % (1024 * 1024) == 0 {
+                // 每MB打印一次
                 let mb = downloaded / (1024 * 1024);
                 println!("Downloaded {} MB", mb);
             }

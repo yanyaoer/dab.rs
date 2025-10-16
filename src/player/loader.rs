@@ -80,7 +80,10 @@ impl AudioLoader {
         // First check if we have a local cached version
         if let Some(cached_path) = self.cache.write().await.get_track_path(&track.id).await? {
             info!("Loading track from cache: {}", cached_path.display());
-            info!("DOWNLOAD-COMPLETE: Returning LoadResult::Seekable for cached track {}", track.id);
+            info!(
+                "DOWNLOAD-COMPLETE: Returning LoadResult::Seekable for cached track {}",
+                track.id
+            );
             return Ok(LoadResult::Seekable(Box::new(std::fs::File::open(
                 cached_path,
             )?)));
@@ -99,14 +102,21 @@ impl AudioLoader {
 
         // Check if we're in download-complete mode (streaming_buffer == 0)
         let config = crate::config::Config::load();
-        info!("Current streaming_buffer setting: {} MB", config.streaming_buffer);
+        info!(
+            "Current streaming_buffer setting: {} MB",
+            config.streaming_buffer
+        );
         if config.streaming_buffer == 0 {
             info!("DOWNLOAD-COMPLETE MODE ACTIVATED: downloading entire file before playback for track {}", track.id);
 
             // Download entire file into memory (like test_squid_direct)
             let audio_data = self.download_to_memory(track, stream_url).await?;
 
-            info!("Download complete for track {} ({} bytes), returning in-memory data", track.id, audio_data.len());
+            info!(
+                "Download complete for track {} ({} bytes), returning in-memory data",
+                track.id,
+                audio_data.len()
+            );
             return Ok(LoadResult::InMemory(audio_data));
         }
 
@@ -149,7 +159,10 @@ impl AudioLoader {
 
     /// Download entire file into memory (like test_squid_direct)
     async fn download_to_memory(&self, track: &Track, url: &str) -> DabResult<Vec<u8>> {
-        info!("Downloading entire file to memory for track: {}", track.title);
+        info!(
+            "Downloading entire file to memory for track: {}",
+            track.title
+        );
 
         let response = self.http_client.get(url).send().await?.error_for_status()?;
         let content_length = response.content_length().unwrap_or(0);
@@ -174,13 +187,20 @@ impl AudioLoader {
 
             if content_length > 0 {
                 let progress = (downloaded as f32 / content_length as f32) * 100.0;
-                debug!("Download progress: {:.1}% ({}/{} bytes)", progress, downloaded, content_length);
+                debug!(
+                    "Download progress: {:.1}% ({}/{} bytes)",
+                    progress, downloaded, content_length
+                );
             }
         }
 
-        info!("Downloaded {} bytes to memory for track {}", audio_data.len(), track.id);
+        info!(
+            "Downloaded {} bytes to memory for track {}",
+            audio_data.len(),
+            track.id
+        );
 
-        // Also cache the file for future use
+        // Also cache the file for future use with full API metadata
         if !self.cache.read().await.has_track(&track.id).await? {
             let temp_file = NamedTempFile::new()?;
             tokio::fs::write(temp_file.path(), &audio_data).await?;
@@ -189,9 +209,12 @@ impl AudioLoader {
                 .cache
                 .write()
                 .await
-                .store_track_with_url(&track.id, temp_file.path(), url)
+                .store_track_with_api_metadata(track, temp_file.path(), url)
                 .await?;
-            info!("Cached track at: {}", cache_path.display());
+            info!(
+                "Cached track with API metadata at: {}",
+                cache_path.display()
+            );
         }
 
         Ok(audio_data)
@@ -230,14 +253,17 @@ impl AudioLoader {
         temp_writer.sync_all().await?;
         drop(temp_writer);
 
-        // Move to cache with original URL
+        // Move to cache with full API metadata
         let cache_path = self
             .cache
             .write()
             .await
-            .store_track_with_url(&track.id, temp_file.path(), url)
+            .store_track_with_api_metadata(track, temp_file.path(), url)
             .await?;
-        info!("Track cached at: {}", cache_path.display());
+        info!(
+            "Track cached with API metadata at: {}",
+            cache_path.display()
+        );
 
         // Return file handle for immediate playback
         Ok(Box::new(std::fs::File::open(cache_path)?))

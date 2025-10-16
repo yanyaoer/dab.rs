@@ -148,8 +148,15 @@ async fn get_stream_url() -> Result<String, Box<dyn std::error::Error>> {
     if trimmed.starts_with("http") {
         Ok(trimmed.to_string())
     } else {
-        Err(format!("Could not extract stream URL from response: {}",
-            if body.len() > 200 { &body[..200] } else { &body }).into())
+        Err(format!(
+            "Could not extract stream URL from response: {}",
+            if body.len() > 200 {
+                &body[..200]
+            } else {
+                &body
+            }
+        )
+        .into())
     }
 }
 
@@ -178,7 +185,10 @@ async fn download_audio(url: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>
         // 显示下载进度
         if content_length > 0 {
             let progress = (downloaded as f64 / content_length as f64) * 100.0;
-            print!("\r   Progress: {:.1}% ({}/{} bytes)", progress, downloaded, content_length);
+            print!(
+                "\r   Progress: {:.1}% ({}/{} bytes)",
+                progress, downloaded, content_length
+            );
             use std::io::{self, Write};
             io::stdout().flush().unwrap();
         }

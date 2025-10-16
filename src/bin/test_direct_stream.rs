@@ -72,7 +72,8 @@ async fn get_stream_url() -> Result<String, Box<dyn std::error::Error>> {
         return Err(format!("API error: {}", error).into());
     }
 
-    stream_response.original_track_url
+    stream_response
+        .original_track_url
         .ok_or_else(|| "No stream URL in response".into())
 }
 
@@ -100,7 +101,10 @@ async fn download_audio(url: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>
         // 显示下载进度
         if content_length > 0 {
             let progress = (downloaded as f64 / content_length as f64) * 100.0;
-            print!("\r   Progress: {:.1}% ({}/{} bytes)", progress, downloaded, content_length);
+            print!(
+                "\r   Progress: {:.1}% ({}/{} bytes)",
+                progress, downloaded, content_length
+            );
             use std::io::{self, Write};
             io::stdout().flush().unwrap();
         }

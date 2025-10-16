@@ -212,7 +212,9 @@ impl Read for StreamingWrapper {
                     }
 
                     // One final aggressive wait before giving up
-                    warn!("StreamingWrapper: Final blocking wait of 100ms to prevent audio artifacts");
+                    warn!(
+                        "StreamingWrapper: Final blocking wait of 100ms to prevent audio artifacts"
+                    );
                     if self
                         .source
                         .blocking_wait_for_data(std::time::Duration::from_millis(100))
@@ -221,7 +223,10 @@ impl Read for StreamingWrapper {
                         // Try to read again
                         match source_clone.read(buf) {
                             Ok(bytes_read) => {
-                                debug!("StreamingWrapper: Successfully read {} bytes after final wait", bytes_read);
+                                debug!(
+                                    "StreamingWrapper: Successfully read {} bytes after final wait",
+                                    bytes_read
+                                );
                                 return Ok(bytes_read);
                             }
                             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -237,7 +242,8 @@ impl Read for StreamingWrapper {
                         std::io::ErrorKind::WouldBlock,
                         format!(
                             "Stream buffer underrun after {}ms wait for {} bytes",
-                            total_wait_ms + 100, buf_size
+                            total_wait_ms + 100,
+                            buf_size
                         ),
                     ));
                 }

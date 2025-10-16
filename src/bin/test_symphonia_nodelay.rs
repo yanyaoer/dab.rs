@@ -57,14 +57,16 @@ impl Read for NoDelayReader {
                 if available > 0 {
                     // 有数据可读
                     let to_read = buf.len().min(available);
-                    buf[..to_read].copy_from_slice(
-                        &buffer.data[buffer.read_pos..buffer.read_pos + to_read]
-                    );
+                    buf[..to_read]
+                        .copy_from_slice(&buffer.data[buffer.read_pos..buffer.read_pos + to_read]);
                     buffer.read_pos += to_read;
 
                     // 重置静音计数
                     if self.silence_inserted > 0 {
-                        println!("📊 Recovered after {} bytes of silence", self.silence_inserted);
+                        println!(
+                            "📊 Recovered after {} bytes of silence",
+                            self.silence_inserted
+                        );
                         self.silence_inserted = 0;
                     }
 
@@ -89,8 +91,12 @@ impl Read for NoDelayReader {
         buf[..silence_len].copy_from_slice(&self.zero_buffer[..silence_len]);
 
         self.silence_inserted += silence_len;
-        if self.silence_inserted % 40960 == 0 { // 每40KB打印一次
-            println!("⚠️  Inserted {} KB of silence", self.silence_inserted / 1024);
+        if self.silence_inserted % 40960 == 0 {
+            // 每40KB打印一次
+            println!(
+                "⚠️  Inserted {} KB of silence",
+                self.silence_inserted / 1024
+            );
         }
 
         Ok(silence_len)
@@ -101,7 +107,7 @@ impl std::io::Seek for NoDelayReader {
     fn seek(&mut self, _: std::io::SeekFrom) -> std::io::Result<u64> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
-            "Seek not supported"
+            "Seek not supported",
         ))
     }
 }
@@ -164,7 +170,10 @@ impl MinimalAudioSource {
                         self.sample_index = 0;
 
                         if self.total_silence_inserted > 0 {
-                            println!("🎵 Audio recovered after {} silence samples", self.total_silence_inserted);
+                            println!(
+                                "🎵 Audio recovered after {} silence samples",
+                                self.total_silence_inserted
+                            );
                             self.total_silence_inserted = 0;
                         }
 
@@ -181,7 +190,8 @@ impl MinimalAudioSource {
             }
             Err(_) => {
                 // 无数据，插入静音而不是停止
-                if self.total_silence_inserted < self.sample_rate as usize * 10 { // 最多10秒静音
+                if self.total_silence_inserted < self.sample_rate as usize * 10 {
+                    // 最多10秒静音
                     self.current_samples = self.silence_frames.clone();
                     self.sample_index = 0;
                     self.total_silence_inserted += self.silence_frames.len();
@@ -277,9 +287,11 @@ async fn test_no_delay_streaming(url: &str) {
         let mb_available = buf.data.len() as f32 / (1024.0 * 1024.0);
 
         if mb_available >= 10.0 {
-            println!("✅ Buffered {:.1} MB in {:.1}s",
-                     mb_available,
-                     start_time.elapsed().as_secs_f32());
+            println!(
+                "✅ Buffered {:.1} MB in {:.1}s",
+                mb_available,
+                start_time.elapsed().as_secs_f32()
+            );
             drop(buf);
             break;
         }
@@ -316,7 +328,8 @@ async fn test_no_delay_streaming(url: &str) {
     };
 
     let mut format = probed.format;
-    let track = format.tracks()
+    let track = format
+        .tracks()
         .iter()
         .find(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
         .expect("No supported audio tracks");
@@ -326,11 +339,16 @@ async fn test_no_delay_streaming(url: &str) {
         .expect("Failed to create decoder");
 
     let sample_rate = track.codec_params.sample_rate.unwrap_or(44100);
-    let channels = track.codec_params.channels
+    let channels = track
+        .codec_params
+        .channels
         .map(|ch| ch.count() as u16)
         .unwrap_or(2);
 
-    println!("✅ Decoder created: {}Hz, {} channels", sample_rate, channels);
+    println!(
+        "✅ Decoder created: {}Hz, {} channels",
+        sample_rate, channels
+    );
 
     // 创建音频输出
     let (_stream, stream_handle) = OutputStream::try_default().unwrap();
@@ -354,7 +372,8 @@ async fn test_no_delay_streaming(url: &str) {
     println!("\nListen for pops vs silence gaps!\n");
 
     // 播放监控
-    for i in 0..60 {  // 播放60秒
+    for i in 0..60 {
+        // 播放60秒
         if sink.empty() {
             println!("\nPlayback finished");
             break;
@@ -367,9 +386,17 @@ async fn test_no_delay_streaming(url: &str) {
         let complete = buf.complete;
         drop(buf);
 
-        print!("\r⏱️  {} sec | Total: {:.1} MB | Available: {:.1} MB {}",
-               i + 1, mb_buffered, mb_available,
-               if complete { "| ✅ Downloaded" } else { "| ⏬ Downloading..." });
+        print!(
+            "\r⏱️  {} sec | Total: {:.1} MB | Available: {:.1} MB {}",
+            i + 1,
+            mb_buffered,
+            mb_available,
+            if complete {
+                "| ✅ Downloaded"
+            } else {
+                "| ⏬ Downloading..."
+            }
+        );
 
         use std::io::{self};
         io::stdout().flush().unwrap();
@@ -396,7 +423,10 @@ async fn download_fast(url: &str, buffer: Arc<Mutex<MinimalBuffer>>) {
     };
 
     let content_length = response.content_length().unwrap_or(0);
-    println!("📥 Downloading {} MB (FAST mode)", content_length / (1024 * 1024));
+    println!(
+        "📥 Downloading {} MB (FAST mode)",
+        content_length / (1024 * 1024)
+    );
 
     let mut stream = response.bytes_stream();
     let mut downloaded = 0u64;
@@ -418,9 +448,11 @@ async fn download_fast(url: &str, buffer: Arc<Mutex<MinimalBuffer>>) {
 
             // 每5MB打印一次进度
             if downloaded - last_print >= 5 * 1024 * 1024 {
-                println!("📥 Downloaded {} MB / {} MB (FAST)",
-                         downloaded / (1024 * 1024),
-                         content_length / (1024 * 1024));
+                println!(
+                    "📥 Downloaded {} MB / {} MB (FAST)",
+                    downloaded / (1024 * 1024),
+                    content_length / (1024 * 1024)
+                );
                 last_print = downloaded;
             }
         }

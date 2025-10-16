@@ -1,8 +1,11 @@
 use crate::async_client::AsyncNetworkClient;
+use crate::cache::Cache;
 use crate::error::DabResult;
+use crate::library::Library;
 use crate::player::Track;
 use crate::search::DabAlbum;
 use crate::tui::components::{ListItemType, UnifiedList};
+use log::info;
 
 pub enum NavigationAction {
     ShowAlbumDetail(String),
@@ -15,11 +18,36 @@ pub enum NavigationAction {
     ClearAndPlayAll(Vec<Track>), // Clear queue and add all tracks from current list
 }
 
-pub struct KeyHandler;
+pub struct KeyHandler {
+    cache: Option<Cache>,
+    library: Option<Library>,
+}
 
 impl KeyHandler {
     pub fn new() -> Self {
-        Self
+        Self {
+            cache: None,
+            library: None,
+        }
+    }
+
+    pub async fn new_with_cache_and_library() -> DabResult<Self> {
+        let cache = Cache::new().await.ok();
+        let library = if let Some(ref cache) = cache {
+            Library::new(cache.clone()).await.ok()
+        } else {
+            None
+        };
+
+        Ok(Self { cache, library })
+    }
+
+    pub fn set_cache(&mut self, cache: Cache) {
+        self.cache = Some(cache);
+    }
+
+    pub fn set_library(&mut self, library: Library) {
+        self.library = Some(library);
     }
 
     pub async fn handle_enter(
@@ -37,7 +65,59 @@ impl KeyHandler {
                     return Ok(None);
                 }
                 ListItemType::FavoriteAlbum(album) => {
-                    // Load album details and play all tracks
+                    // First, try to load tracks from local cache
+                    let mut tracks_found = Vec::new();
+
+                    if let Some(ref cache) = self.cache {
+                        info!(
+                            "Checking local cache for album tracks: {} by {}",
+                            album.title, album.artist
+                        );
+
+                        // Try to get tracks from cached files by album name
+                        if let Ok(cached_tracks) = cache.get_album_tracks(&album.title).await {
+                            for cached_track in cached_tracks {
+                                if let Some(metadata) = cached_track.metadata {
+                                    tracks_found.push(Track {
+                                        id: cached_track.track_id.clone(),
+                                        title: metadata
+                                            .title
+                                            .unwrap_or_else(|| "Unknown".to_string()),
+                                        artist: metadata
+                                            .artist
+                                            .unwrap_or_else(|| album.artist.clone()),
+                                        album: metadata
+                                            .album
+                                            .unwrap_or_else(|| album.title.clone()),
+                                        duration_ms: metadata.duration_ms.unwrap_or(0),
+                                        local_path: Some(format!(
+                                            "file://{}",
+                                            cached_track.file_path.display()
+                                        )),
+                                        cover_url: album.cover.clone(),
+                                        track_id: Some(cached_track.track_id),
+                                        artist_id: album.artist_id.clone(),
+                                        album_id: Some(album.id.clone()),
+                                    });
+                                }
+                            }
+                        }
+
+                        if !tracks_found.is_empty() {
+                            info!(
+                                "Found {} tracks in local cache for album: {}",
+                                tracks_found.len(),
+                                album.title
+                            );
+                            return Ok(Some(NavigationAction::PlayAlbum(tracks_found)));
+                        }
+                    }
+
+                    // If no local tracks found, try network (but this might fail if API is down)
+                    info!(
+                        "No cached tracks found for album: {}, attempting network request",
+                        album.title
+                    );
                     if let Ok(dab_album) = network_client.get_album(album.id.clone()).await {
                         if let Some(tracks) = &dab_album.tracks {
                             let player_tracks: Vec<Track> = tracks
@@ -139,14 +219,51 @@ impl KeyHandler {
                     }
                 }
                 ListItemType::FavoriteAlbum(album) => {
-                    // Load album details and get all tracks
-                    if let Ok(dab_album) = network_client.get_album(album.id.clone()).await {
-                        if let Some(tracks) = &dab_album.tracks {
-                            let player_tracks: Vec<Track> = tracks
-                                .iter()
-                                .map(|dab_track| Track::from_dab_track(dab_track))
-                                .collect();
-                            all_tracks.extend(player_tracks);
+                    // First try local cache
+                    let mut cached_tracks_found = false;
+
+                    if let Some(ref cache) = self.cache {
+                        if let Ok(cached_tracks) = cache.get_album_tracks(&album.title).await {
+                            for cached_track in cached_tracks {
+                                if let Some(metadata) = cached_track.metadata {
+                                    all_tracks.push(Track {
+                                        id: cached_track.track_id.clone(),
+                                        title: metadata
+                                            .title
+                                            .unwrap_or_else(|| "Unknown".to_string()),
+                                        artist: metadata
+                                            .artist
+                                            .unwrap_or_else(|| album.artist.clone()),
+                                        album: metadata
+                                            .album
+                                            .unwrap_or_else(|| album.title.clone()),
+                                        duration_ms: metadata.duration_ms.unwrap_or(0),
+                                        local_path: Some(format!(
+                                            "file://{}",
+                                            cached_track.file_path.display()
+                                        )),
+                                        cover_url: album.cover.clone(),
+                                        track_id: Some(cached_track.track_id),
+                                        artist_id: album.artist_id.clone(),
+                                        album_id: Some(album.id.clone()),
+                                    });
+                                    cached_tracks_found = true;
+                                }
+                            }
+                        }
+                    }
+
+                    // Only try network if no local tracks found
+                    if !cached_tracks_found {
+                        // Load album details and get all tracks
+                        if let Ok(dab_album) = network_client.get_album(album.id.clone()).await {
+                            if let Some(tracks) = &dab_album.tracks {
+                                let player_tracks: Vec<Track> = tracks
+                                    .iter()
+                                    .map(|dab_track| Track::from_dab_track(dab_track))
+                                    .collect();
+                                all_tracks.extend(player_tracks);
+                            }
                         }
                     }
                 }

@@ -100,7 +100,10 @@ impl AudioSink {
             return Ok(());
         }
 
-        info!("Playing audio from memory buffer ({} bytes) using rodio directly", audio_data.len());
+        info!(
+            "Playing audio from memory buffer ({} bytes) using rodio directly",
+            audio_data.len()
+        );
 
         // Create new sink
         let sink = Sink::try_new(self.stream_handle.as_ref().unwrap())

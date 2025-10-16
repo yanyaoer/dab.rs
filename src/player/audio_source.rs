@@ -64,12 +64,18 @@ impl DecodedAudioSource {
 
                 if self.consecutive_underruns > 100 {
                     // If we've had too many consecutive underruns, something is wrong
-                    error!("Too many consecutive buffer underruns ({}), stopping playback", self.consecutive_underruns);
+                    error!(
+                        "Too many consecutive buffer underruns ({}), stopping playback",
+                        self.consecutive_underruns
+                    );
                     self.finished = true;
                     return false;
                 }
 
-                trace!("Buffer underrun #{}, inserting silence to maintain audio continuity", self.consecutive_underruns);
+                trace!(
+                    "Buffer underrun #{}, inserting silence to maintain audio continuity",
+                    self.consecutive_underruns
+                );
 
                 // Instead of stopping playback, insert a small amount of silence
                 // This prevents pops but maintains timing

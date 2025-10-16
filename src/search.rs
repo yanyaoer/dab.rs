@@ -1,12 +1,14 @@
 use log::{debug, info};
 use serde::{Deserialize, Serialize};
 
+use crate::cache::Cache;
 use crate::config::Config;
 use crate::error::DabResult;
 use crate::id_utils::{
     deserialize_id_as_string, deserialize_option_id_as_string, deserialize_similar_artist_ids,
     serialize_id_as_string, serialize_option_id_as_string, serialize_similar_artist_ids,
 };
+use crate::library::Library;
 use crate::music_provider::MusicProviderClient;
 use crate::player::Track;
 
@@ -346,6 +348,18 @@ impl DabMusicApi {
         }
     }
 
+    pub async fn new_with_cache(config: &Config) -> DabResult<Self> {
+        Ok(Self {
+            provider: MusicProviderClient::new_with_cache_and_library(config.clone()).await?,
+        })
+    }
+
+    /// Set cache and library for the underlying provider
+    pub fn set_cache_and_library(&mut self, cache: Cache, library: Library) {
+        self.provider.set_cache(cache);
+        self.provider.set_library(library);
+    }
+
     pub async fn search(
         &self,
         query: &str,
@@ -385,6 +399,14 @@ impl DabMusicApi {
     ) -> DabResult<(DabArtist, Vec<DabAlbum>)> {
         debug!("Getting discography for artist: {}", artist_id);
         self.provider.get_artist_discography(artist_id).await
+    }
+
+    pub async fn get_artist_albums(&self, artist_id: &str) -> DabResult<Vec<DabAlbum>> {
+        debug!(
+            "Getting albums for artist using /artist/?f= endpoint: {}",
+            artist_id
+        );
+        self.provider.get_artist_albums(artist_id).await
     }
 }
 

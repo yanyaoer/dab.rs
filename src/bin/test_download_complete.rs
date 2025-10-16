@@ -31,7 +31,10 @@ fn main() {
         println!("3. A seekable file handle will be returned");
         println!("4. NO pop sounds should occur");
     } else {
-        println!("\n⚠️ Streaming mode is enabled (streaming_buffer = {} MB)", config.streaming_buffer);
+        println!(
+            "\n⚠️ Streaming mode is enabled (streaming_buffer = {} MB)",
+            config.streaming_buffer
+        );
         println!("This may still have pop sounds for high-bitrate content");
     }
 
