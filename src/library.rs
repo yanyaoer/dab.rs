@@ -87,7 +87,7 @@ impl From<&DabAlbum> for FavoriteAlbum {
 }
 
 impl Library {
-    pub async fn new(cache: Cache) -> DabResult<Self> {
+    pub async fn new(mut cache: Cache) -> DabResult<Self> {
         let metadata = LibraryMetadata {
             artists: HashMap::new(),
             albums: HashMap::new(),
@@ -97,6 +97,24 @@ impl Library {
         let cache_dir = cache.get_cache_dir();
         let favorites_path = cache_dir.join("favorite_albums.json");
         let favorites = Self::load_favorites(&favorites_path).unwrap_or_default();
+
+        // Auto-pin all cached tracks from existing favorite albums
+        let favorite_album_ids: Vec<String> = favorites
+            .albums
+            .values()
+            .map(|album| album.id.clone())
+            .collect();
+
+        if !favorite_album_ids.is_empty() {
+            let pinned = cache.pin_tracks_by_album_ids(&favorite_album_ids).await?;
+            if pinned > 0 {
+                info!(
+                    "Auto-pinned {} cached tracks from {} existing favorite albums",
+                    pinned,
+                    favorite_album_ids.len()
+                );
+            }
+        }
 
         let mut library = Self {
             cache,
@@ -323,7 +341,7 @@ impl Library {
         Ok(())
     }
 
-    pub fn add_favorite_album(&mut self, album: &DabAlbum) -> DabResult<bool> {
+    pub async fn add_favorite_album(&mut self, album: &DabAlbum) -> DabResult<bool> {
         let favorite_album = FavoriteAlbum::from(album);
         let album_key = format!("{}-{}", album.artist, album.title);
 
@@ -334,6 +352,18 @@ impl Library {
 
         self.save_favorites()?;
 
+        // Auto-pin all cached tracks from this favorite album
+        let pinned = self
+            .cache
+            .pin_tracks_by_album_ids(&[album.id.clone()])
+            .await?;
+        if pinned > 0 {
+            info!(
+                "Auto-pinned {} cached tracks from favorite album '{}'",
+                pinned, album.title
+            );
+        }
+
         info!(
             "Added album '{}' by '{}' to favorites",
             album.title, album.artist
@@ -341,12 +371,32 @@ impl Library {
         Ok(is_new)
     }
 
-    pub fn remove_favorite_album(&mut self, artist: &str, title: &str) -> DabResult<bool> {
+    pub async fn remove_favorite_album(&mut self, artist: &str, title: &str) -> DabResult<bool> {
         let album_key = format!("{}-{}", artist, title);
+
+        // Get album_id before removing
+        let album_id = self
+            .favorites
+            .albums
+            .get(&album_key)
+            .map(|album| album.id.clone());
+
         let removed = self.favorites.albums.remove(&album_key).is_some();
 
         if removed {
             self.save_favorites()?;
+
+            // Auto-unpin all cached tracks from this removed favorite album
+            if let Some(id) = album_id {
+                let unpinned = self.cache.unpin_tracks_by_album_ids(&[id]).await?;
+                if unpinned > 0 {
+                    info!(
+                        "Auto-unpinned {} cached tracks from removed favorite album '{}'",
+                        unpinned, title
+                    );
+                }
+            }
+
             info!("Removed album '{}' by '{}' from favorites", title, artist);
         }
 

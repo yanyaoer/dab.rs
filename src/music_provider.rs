@@ -681,11 +681,17 @@ impl MusicProviderClient {
 
         // First, check if we have this track cached locally
         if let Some(ref cache) = self.cache {
-            debug!("Cache is available, cloning and checking for track {}", track_id);
+            debug!(
+                "Cache is available, cloning and checking for track {}",
+                track_id
+            );
 
             // Clone cache to avoid borrowing issues
             let mut cache_clone = cache.clone();
-            debug!("Cache cloned, calling get_track_path for track {}", track_id);
+            debug!(
+                "Cache cloned, calling get_track_path for track {}",
+                track_id
+            );
 
             match cache_clone.get_track_path(track_id).await {
                 Ok(Some(cached_path)) => {
@@ -818,7 +824,10 @@ impl MusicProviderClient {
                                 album_title = metadata.album.clone();
                             }
                             if album_artist.is_none() {
-                                album_artist = metadata.album_artist.clone().or_else(|| metadata.artist.clone());
+                                album_artist = metadata
+                                    .album_artist
+                                    .clone()
+                                    .or_else(|| metadata.artist.clone());
                             }
                             if album_cover.is_none() {
                                 album_cover = metadata.cover_url.clone();

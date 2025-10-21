@@ -160,7 +160,10 @@ impl Cache {
 
         if let Some(entry) = self.metadata.entries.get_mut(track_id) {
             let path = PathBuf::from(&entry.file_path);
-            debug!("Found metadata entry for track {}, file_path: {}", track_id, entry.file_path);
+            debug!(
+                "Found metadata entry for track {}, file_path: {}",
+                track_id, entry.file_path
+            );
             debug!("Checking if path exists: {}", path.display());
 
             if path.exists() {
@@ -415,7 +418,18 @@ impl Cache {
         Ok(())
     }
 
+    /// Get total cache size (excluding pinned tracks for favorites)
     pub fn get_cache_size(&self) -> u64 {
+        self.metadata
+            .entries
+            .values()
+            .filter(|entry| entry.priority != CachePriority::Pinned)
+            .map(|entry| entry.size_bytes)
+            .sum()
+    }
+
+    /// Get total cache size including pinned tracks
+    pub fn get_total_cache_size(&self) -> u64 {
         self.metadata
             .entries
             .values()
@@ -584,41 +598,38 @@ impl Cache {
         Ok(())
     }
 
-    /// Clean up expired cache entries (for stream URLs)
+    /// Clean up expired stream URLs (does NOT delete audio files)
+    /// Only marks URLs as expired to force re-fetching from API
     async fn cleanup_expired(&mut self) -> DabResult<()> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
 
-        let mut expired_tracks = Vec::new();
+        let mut expired_count = 0;
 
-        for (track_id, entry) in &self.metadata.entries {
+        for entry in self.metadata.entries.values_mut() {
             if let Some(expires_at) = entry.expires_at {
                 if now > expires_at {
-                    expired_tracks.push(track_id.clone());
+                    // Only clear the URL, keep the audio file
+                    if !entry.url.is_empty() {
+                        debug!(
+                            "Stream URL expired for track {}, clearing URL (keeping cached file)",
+                            entry.track_id
+                        );
+                        entry.url.clear();
+                        entry.expires_at = None; // Reset expiration
+                        expired_count += 1;
+                    }
                 }
             }
         }
 
-        if !expired_tracks.is_empty() {
-            info!("Cleaning up {} expired cache entries", expired_tracks.len());
-            for track_id in expired_tracks {
-                if let Some(entry) = self.metadata.entries.remove(&track_id) {
-                    let path = PathBuf::from(&entry.file_path);
-                    if path.exists() {
-                        if let Err(e) = fs::remove_file(&path).await {
-                            warn!(
-                                "Failed to remove expired cached file {}: {}",
-                                path.display(),
-                                e
-                            );
-                        } else {
-                            debug!("Removed expired cached file: {}", path.display());
-                        }
-                    }
-                }
-            }
+        if expired_count > 0 {
+            info!(
+                "Cleared {} expired stream URLs (audio files preserved)",
+                expired_count
+            );
             self.save_metadata().await?;
         }
 
@@ -688,6 +699,60 @@ impl Cache {
         self.save_metadata().await?;
         info!("Unpinned {} tracks", track_ids.len());
         Ok(())
+    }
+
+    /// Pin all tracks from favorite albums (by album_id)
+    pub async fn pin_tracks_by_album_ids(&mut self, album_ids: &[String]) -> DabResult<usize> {
+        let mut pinned_count = 0;
+
+        for entry in self.metadata.entries.values_mut() {
+            if let Some(ref metadata) = entry.id3_metadata {
+                if let Some(ref album_id) = metadata.album_id {
+                    if album_ids.contains(album_id) && entry.priority != CachePriority::Pinned {
+                        entry.priority = CachePriority::Pinned;
+                        pinned_count += 1;
+                    }
+                }
+            }
+        }
+
+        if pinned_count > 0 {
+            self.save_metadata().await?;
+            info!(
+                "Pinned {} tracks from {} favorite albums",
+                pinned_count,
+                album_ids.len()
+            );
+        }
+
+        Ok(pinned_count)
+    }
+
+    /// Unpin all tracks from unfavorited albums (by album_id)
+    pub async fn unpin_tracks_by_album_ids(&mut self, album_ids: &[String]) -> DabResult<usize> {
+        let mut unpinned_count = 0;
+
+        for entry in self.metadata.entries.values_mut() {
+            if let Some(ref metadata) = entry.id3_metadata {
+                if let Some(ref album_id) = metadata.album_id {
+                    if album_ids.contains(album_id) && entry.priority == CachePriority::Pinned {
+                        entry.priority = CachePriority::Normal;
+                        unpinned_count += 1;
+                    }
+                }
+            }
+        }
+
+        if unpinned_count > 0 {
+            self.save_metadata().await?;
+            info!(
+                "Unpinned {} tracks from {} removed favorite albums",
+                unpinned_count,
+                album_ids.len()
+            );
+        }
+
+        Ok(unpinned_count)
     }
 
     /// Get cache statistics

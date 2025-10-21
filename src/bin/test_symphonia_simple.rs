@@ -375,7 +375,7 @@ async fn test_simplified_streaming(url: &str) {
         }
     };
 
-    let mut format = probed.format;
+    let format = probed.format;
     let track = format
         .tracks()
         .iter()

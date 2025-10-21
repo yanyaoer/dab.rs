@@ -11,7 +11,7 @@ mod sink;
 mod streaming;
 
 pub use engine::PlayerEngine;
-pub use queue::{Queue, QueueCommand, QueueEvent, RepeatMode, Track};
+pub use queue::{Queue, RepeatMode, Track};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayerStatus {

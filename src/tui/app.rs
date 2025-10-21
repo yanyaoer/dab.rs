@@ -1129,7 +1129,7 @@ impl TuiApp {
                 {
                     match action {
                         NavigationAction::AddToFavorites(album) => {
-                            match self.library.add_favorite_album(&album) {
+                            match self.library.add_favorite_album(&album).await {
                                 Ok(is_new) => {
                                     if is_new {
                                         self.status_message = Some(format!(

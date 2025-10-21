@@ -1,7 +1,7 @@
 use reqwest;
 use rodio::{Decoder, OutputStream, Sink};
 use serde::{Deserialize, Serialize};
-use std::io::{BufReader, Cursor, Read};
+use std::io::{BufReader, Cursor};
 use std::time::Duration;
 
 #[derive(Debug, Deserialize, Serialize)]

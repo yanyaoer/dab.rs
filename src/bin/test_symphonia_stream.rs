@@ -329,7 +329,7 @@ async fn test_symphonia_streaming(url: &str, min_buffer_kb: usize) {
         }
     };
 
-    let mut format = probed.format;
+    let format = probed.format;
     let track = format
         .tracks()
         .iter()

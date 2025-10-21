@@ -327,7 +327,7 @@ async fn test_no_delay_streaming(url: &str) {
         }
     };
 
-    let mut format = probed.format;
+    let format = probed.format;
     let track = format
         .tracks()
         .iter()
